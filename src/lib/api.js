@@ -15,7 +15,7 @@ export async function getContacts(teamId) {
 
 export async function importContactsCSV(teamId, contacts, userId) {
   // contacts = array de { name, phone, email, tags }
-  const rows = contacts.map(c => ({
+  const allRows = contacts.map(c => ({
     team_id: teamId,
     name: c.name?.trim(),
     phone: normalizePhone(c.phone),
@@ -23,6 +23,13 @@ export async function importContactsCSV(teamId, contacts, userId) {
     tags: c.tags ? (Array.isArray(c.tags) ? c.tags : c.tags.split(',').map(t => t.trim())) : [],
     created_by: userId,
   }))
+
+  // Deduplicar por telefone (mantém o último registro de cada número)
+  const uniqueMap = new Map()
+  for (const row of allRows) {
+    if (row.phone) uniqueMap.set(row.phone, row)
+  }
+  const rows = [...uniqueMap.values()]
 
   const { data, error } = await supabase
     .from('contacts')
