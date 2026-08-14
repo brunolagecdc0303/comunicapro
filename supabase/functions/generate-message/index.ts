@@ -76,7 +76,7 @@ Responda APENAS com o texto da mensagem, sem explicações.`
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 600,
         system: systemPrompt,
         messages: [{ role: 'user', content: userPrompt }],
