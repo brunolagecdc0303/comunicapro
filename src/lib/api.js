@@ -14,12 +14,13 @@ export async function getContacts(teamId) {
 }
 
 export async function importContactsCSV(teamId, contacts, userId) {
-  // contacts = array de { name, phone, email, tags }
+  // contacts = array de { name, phone, email, tags, client_code }
   const allRows = contacts.map(c => ({
     team_id: teamId,
     name: c.name?.trim(),
     phone: normalizePhone(c.phone),
     email: c.email?.trim() || null,
+    client_code: c.client_code?.toString().trim() || null,
     tags: c.tags ? (Array.isArray(c.tags) ? c.tags : c.tags.split(',').map(t => t.trim())) : [],
     created_by: userId,
   }))
@@ -121,7 +122,6 @@ export async function createCampaign(campaign) {
 }
 
 export async function scheduleCampaign(campaignId, contactIds, content, mediaUrl, scheduledAt) {
-  // Criar mensagens na fila
   const messages = contactIds.map(c => ({
     campaign_id: campaignId,
     contact_id: c.id,
@@ -137,7 +137,6 @@ export async function scheduleCampaign(campaignId, contactIds, content, mediaUrl
     .insert(messages)
   if (queueError) throw queueError
 
-  // Atualizar campanha
   const { error } = await supabase
     .from('campaigns')
     .update({
@@ -160,10 +159,42 @@ export async function generateMessage(prompt, pdfId, teamId) {
   return data.message
 }
 
+// Gerar mensagens em massa: uma por contato, usando o PDF correspondente
+export async function generateBulkMessages(prompt, contactsWithPdfs, teamId, onProgress) {
+  const results = []
+  for (let i = 0; i < contactsWithPdfs.length; i++) {
+    const { contact, pdf } = contactsWithPdfs[i]
+    try {
+      const personalPrompt = `${prompt}\n\nO destinatário é: ${contact.name} (código ${contact.client_code})`
+      const { data, error } = await supabase.functions.invoke('generate-message', {
+        body: { prompt: personalPrompt, pdfId: pdf?.id || null, teamId }
+      })
+      if (error) throw error
+      results.push({
+        contact,
+        pdf,
+        message: data.message,
+        status: 'generated',
+      })
+    } catch (err) {
+      results.push({
+        contact,
+        pdf,
+        message: null,
+        status: 'error',
+        error: err.message,
+      })
+    }
+    if (onProgress) onProgress(i + 1, contactsWithPdfs.length, results[results.length - 1])
+  }
+  return results
+}
+
 // ============================================
 // PDFs
 // ============================================
 export async function uploadPDF(teamId, file, userId) {
+  const clientCode = extractClientCode(file.name)
   const path = `${teamId}/${Date.now()}_${file.name}`
   const { error: uploadError } = await supabase.storage
     .from('pdfs')
@@ -181,12 +212,29 @@ export async function uploadPDF(teamId, file, userId) {
       name: file.name,
       file_url: urlData.publicUrl,
       file_size: file.size,
+      client_code: clientCode,
       created_by: userId,
     })
     .select()
     .single()
   if (error) throw error
   return data
+}
+
+// Upload em massa de PDFs com extração de código do cliente
+export async function uploadPDFsBulk(teamId, files, userId, onProgress) {
+  const results = []
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]
+    try {
+      const pdf = await uploadPDF(teamId, file, userId)
+      results.push({ file: file.name, clientCode: pdf.client_code, status: 'ok', pdf })
+    } catch (err) {
+      results.push({ file: file.name, clientCode: extractClientCode(file.name), status: 'error', error: err.message })
+    }
+    if (onProgress) onProgress(i + 1, files.length)
+  }
+  return results
 }
 
 export async function getPDFs(teamId) {
@@ -197,6 +245,19 @@ export async function getPDFs(teamId) {
     .order('created_at', { ascending: false })
   if (error) throw error
   return data
+}
+
+// Busca PDFs que fazem match com contatos pelo client_code
+export function matchContactsPDFs(contacts, pdfs) {
+  const pdfMap = new Map()
+  for (const pdf of pdfs) {
+    if (pdf.client_code) pdfMap.set(pdf.client_code, pdf)
+  }
+  return contacts.map(contact => ({
+    contact,
+    pdf: contact.client_code ? pdfMap.get(contact.client_code) || null : null,
+    matched: contact.client_code ? pdfMap.has(contact.client_code) : false,
+  }))
 }
 
 // ============================================
@@ -221,8 +282,18 @@ export async function getDashboardStats(teamId) {
 function normalizePhone(phone) {
   if (!phone) return ''
   let clean = phone.replace(/\D/g, '')
-  // Adiciona 55 se não tem código do país
   if (clean.length === 11) clean = '55' + clean
   if (clean.length === 10) clean = '55' + clean
   return clean
+}
+
+// Extrai código do cliente do nome do arquivo
+// Ex: "Conta 355986.pdf" → "355986", "355986_relatorio.pdf" → "355986"
+export function extractClientCode(filename) {
+  if (!filename) return null
+  // Remove extensão
+  const name = filename.replace(/\.[^.]+$/, '')
+  // Procura sequência de 4+ dígitos
+  const match = name.match(/(\d{4,})/)
+  return match ? match[1] : null
 }

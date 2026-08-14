@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
 
 async function sendDirect(
   supabase: any,
-  messages: { phone: string; content: string; mediaUrl?: string }[],
+  messages: { phone: string; content: string; mediaUrl?: string; documentUrl?: string; fileName?: string }[],
   teamId: string,
 ) {
   // Buscar API key do time
@@ -61,7 +61,7 @@ async function sendDirect(
 
   for (const msg of messages) {
     try {
-      const result = await sendViaWasender(team.wasender_api_key, msg.phone, msg.content, msg.mediaUrl)
+      const result = await sendViaWasender(team.wasender_api_key, msg.phone, msg.content, msg.mediaUrl, msg.documentUrl, msg.fileName)
       results.push({ phone: msg.phone, status: 'sent', response: result })
 
       // Log
@@ -167,16 +167,22 @@ async function processQueue(supabase: any) {
   })
 }
 
-async function sendViaWasender(apiKey: string, phone: string, message: string, mediaUrl?: string) {
+async function sendViaWasender(apiKey: string, phone: string, message: string, mediaUrl?: string, documentUrl?: string, fileName?: string) {
   // Docs: https://wasenderapi.com/api-docs/messages/send-text-message
   const payload: any = {
     to: phone,
     text: message,
   }
 
+  // Se tem documento (PDF), envia como documento
+  // Docs: https://wasenderapi.com/api-docs/messages/send-document-message
+  if (documentUrl) {
+    payload.documentUrl = documentUrl
+    if (fileName) payload.fileName = fileName
+  }
   // Se tem mídia (imagem), adiciona imageUrl
   // Docs: https://wasenderapi.com/api-docs/messages/send-image-message
-  if (mediaUrl) {
+  else if (mediaUrl) {
     payload.imageUrl = mediaUrl
   }
 

@@ -30,6 +30,7 @@ export default function Contatos() {
         c.name?.toLowerCase().includes(q) ||
         c.phone?.includes(q) ||
         c.email?.toLowerCase().includes(q) ||
+        c.client_code?.toLowerCase().includes(q) ||
         c.tags?.some(t => t.toLowerCase().includes(q))
       ))
     }
@@ -59,7 +60,6 @@ export default function Contatos() {
           toast.error('CSV vazio')
           return
         }
-        // Mapear colunas (aceita variações)
         const mapped = results.data.map(row => {
           const keys = Object.keys(row)
           const findCol = (...names) => {
@@ -70,9 +70,10 @@ export default function Contatos() {
             name: findCol('nome', 'name', 'cliente'),
             phone: findCol('telefone', 'phone', 'celular', 'whatsapp', 'fone'),
             email: findCol('email', 'e-mail'),
+            client_code: findCol('codigo', 'código', 'code', 'conta', 'client_code', 'codigo_cliente'),
             tags: findCol('tags', 'grupo', 'categoria', 'group'),
           }
-        }).filter(r => r.phone) // Descarta linhas sem telefone
+        }).filter(r => r.phone)
 
         setCsvPreview(mapped)
         setShowImportModal(true)
@@ -123,7 +124,7 @@ export default function Contatos() {
   }
 
   function downloadTemplate() {
-    const csv = 'nome,telefone,email,tags\nJoão Silva,31999998888,joao@email.com,"cliente,vip"\nMaria Santos,31988887777,maria@email.com,prospect'
+    const csv = 'nome,telefone,email,codigo_cliente,tags\nJoão Silva,31999998888,joao@email.com,355986,"cliente,vip"\nMaria Santos,31988887777,maria@email.com,412003,prospect'
     const blob = new Blob([csv], { type: 'text/csv' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
@@ -154,7 +155,7 @@ export default function Contatos() {
             type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
-            placeholder="Buscar por nome, telefone, email ou tag..."
+            placeholder="Buscar por nome, telefone, email, código ou tag..."
             className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-transparent outline-none"
           />
         </div>
@@ -192,6 +193,7 @@ export default function Contatos() {
                   </th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Nome</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500">Telefone</th>
+                  <th className="px-4 py-3 text-left font-medium text-gray-500 hidden sm:table-cell">Código</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500 hidden md:table-cell">Email</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500 hidden lg:table-cell">Tags</th>
                 </tr>
@@ -209,6 +211,9 @@ export default function Contatos() {
                     </td>
                     <td className="px-4 py-3 font-medium text-gray-900">{c.name}</td>
                     <td className="px-4 py-3 text-gray-600 font-mono text-xs">{c.phone}</td>
+                    <td className="px-4 py-3 text-gray-600 font-mono text-xs hidden sm:table-cell">
+                      {c.client_code || '—'}
+                    </td>
                     <td className="px-4 py-3 text-gray-600 hidden md:table-cell">{c.email || '—'}</td>
                     <td className="px-4 py-3 hidden lg:table-cell">
                       <div className="flex gap-1 flex-wrap">
@@ -246,6 +251,7 @@ export default function Contatos() {
                   <tr className="bg-gray-50">
                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Nome</th>
                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Telefone</th>
+                    <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Código</th>
                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Email</th>
                     <th className="px-3 py-2 text-left text-xs font-medium text-gray-500">Tags</th>
                   </tr>
@@ -255,6 +261,7 @@ export default function Contatos() {
                     <tr key={i}>
                       <td className="px-3 py-2">{r.name}</td>
                       <td className="px-3 py-2 font-mono text-xs">{r.phone}</td>
+                      <td className="px-3 py-2 font-mono text-xs text-navy-500">{r.client_code || '—'}</td>
                       <td className="px-3 py-2 text-gray-500">{r.email || '—'}</td>
                       <td className="px-3 py-2 text-gray-500 text-xs">{r.tags || '—'}</td>
                     </tr>
