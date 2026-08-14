@@ -63,14 +63,17 @@ export default function Contatos() {
         const mapped = results.data.map(row => {
           const keys = Object.keys(row)
           const findCol = (...names) => {
-            const key = keys.find(k => names.some(n => k.toLowerCase().includes(n)))
-            return key ? row[key] : ''
+            // Primeiro tenta match exato, depois substring
+            const exact = keys.find(k => names.some(n => k.toLowerCase() === n))
+            if (exact) return row[exact]
+            const partial = keys.find(k => names.some(n => k.toLowerCase().includes(n)))
+            return partial ? row[partial] : ''
           }
           return {
-            name: findCol('nome', 'name', 'cliente'),
+            client_code: findCol('codigo_cliente', 'client_code', 'codigo', 'código', 'conta', 'code'),
+            name: findCol('nome', 'name'),
             phone: findCol('telefone', 'phone', 'celular', 'whatsapp', 'fone'),
             email: findCol('email', 'e-mail'),
-            client_code: findCol('codigo', 'código', 'code', 'conta', 'client_code', 'codigo_cliente'),
             tags: findCol('tags', 'grupo', 'categoria', 'group'),
           }
         }).filter(r => r.phone)
