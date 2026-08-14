@@ -1,5 +1,5 @@
 // Supabase Edge Function: generate-message
-// Gera mensagem de WhatsApp via Gemini API, opcionalmente usando PDF como contexto
+// Gera mensagem de WhatsApp via Claude (Anthropic), opcionalmente usando PDF como contexto
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -21,16 +21,16 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     )
 
-    // Buscar Gemini API key do time
+    // Buscar Claude API key do time
     const { data: team } = await supabase
       .from('teams')
-      .select('gemini_api_key')
+      .select('claude_api_key')
       .eq('id', teamId)
       .single()
 
-    if (!team?.gemini_api_key) {
+    if (!team?.claude_api_key) {
       return new Response(
-        JSON.stringify({ error: 'Gemini API key não configurada. Vá em Configurações.' }),
+        JSON.stringify({ error: 'Claude API key não configurada. Vá em Configurações.' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
       )
     }
@@ -49,7 +49,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Chamar Gemini
+    // Chamar Claude (Anthropic Messages API)
     const systemPrompt = `Você é um redator especializado em comunicação financeira via WhatsApp para assessores de investimentos.
 
 Regras:
@@ -68,32 +68,32 @@ ${prompt}${pdfContext}
 
 Responda APENAS com o texto da mensagem, sem explicações.`
 
-    const geminiResponse = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${team.gemini_api_key}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ parts: [{ text: userPrompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 600,
-          },
-        }),
+    const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': team.claude_api_key,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
       },
-    )
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 600,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
+        temperature: 0.7,
+      }),
+    })
 
-    if (!geminiResponse.ok) {
-      const err = await geminiResponse.text()
-      throw new Error(`Gemini error: ${err}`)
+    if (!claudeResponse.ok) {
+      const err = await claudeResponse.text()
+      throw new Error(`Claude error ${claudeResponse.status}: ${err}`)
     }
 
-    const geminiData = await geminiResponse.json()
-    const message = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || ''
+    const claudeData = await claudeResponse.json()
+    const message = claudeData.content?.[0]?.text || ''
 
     if (!message) {
-      throw new Error('Gemini retornou resposta vazia')
+      throw new Error('Claude retornou resposta vazia')
     }
 
     return new Response(

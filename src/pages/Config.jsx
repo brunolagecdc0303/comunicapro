@@ -7,9 +7,9 @@ import toast from 'react-hot-toast'
 export default function Config() {
   const { team } = useAuth()
   const [wasenderKey, setWasenderKey] = useState('')
-  const [geminiKey, setGeminiKey] = useState('')
+  const [claudeKey, setClaudeKey] = useState('')
   const [showWasender, setShowWasender] = useState(false)
-  const [showGemini, setShowGemini] = useState(false)
+  const [showClaude, setShowClaude] = useState(false)
   const [delay, setDelay] = useState(5)
   const [dailyLimit, setDailyLimit] = useState(500)
   const [saving, setSaving] = useState(false)
@@ -18,7 +18,7 @@ export default function Config() {
   useEffect(() => {
     if (team) {
       setWasenderKey(team.wasender_api_key || '')
-      setGeminiKey(team.gemini_api_key || '')
+      setClaudeKey(team.claude_api_key || '')
       setDelay(team.settings?.delay_between_messages || 5)
       setDailyLimit(team.settings?.daily_limit || 500)
       loadMembers()
@@ -40,7 +40,7 @@ export default function Config() {
         .from('teams')
         .update({
           wasender_api_key: wasenderKey,
-          gemini_api_key: geminiKey,
+          claude_api_key: claudeKey,
           settings: { delay_between_messages: delay, daily_limit: dailyLimit },
         })
         .eq('id', team.id)
@@ -85,20 +85,20 @@ export default function Config() {
           </div>
 
           <div>
-            <label className="label">Gemini API Key</label>
+            <label className="label">Claude API Key (Anthropic)</label>
             <div className="relative">
               <input
-                type={showGemini ? 'text' : 'password'}
-                value={geminiKey}
-                onChange={e => setGeminiKey(e.target.value)}
-                placeholder="Sua chave do Gemini..."
+                type={showClaude ? 'text' : 'password'}
+                value={claudeKey}
+                onChange={e => setClaudeKey(e.target.value)}
+                placeholder="sk-ant-api03-..."
                 className="input pr-10"
               />
               <button
-                onClick={() => setShowGemini(!showGemini)}
+                onClick={() => setShowClaude(!showClaude)}
                 className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
               >
-                {showGemini ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showClaude ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
           </div>
