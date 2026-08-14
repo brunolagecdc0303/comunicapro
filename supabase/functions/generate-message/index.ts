@@ -1,5 +1,6 @@
 // Supabase Edge Function: generate-message
-// Gera mensagem de WhatsApp via Claude (Anthropic), opcionalmente usando PDF como contexto
+// Gera mensagem de WhatsApp via Claude (Anthropic), usando PDF como contexto real
+// Claude lê o PDF nativamente via base64 — sem necessidade de extração de texto
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -35,38 +36,76 @@ Deno.serve(async (req) => {
       )
     }
 
-    // Se tem PDF, buscar texto extraído
-    let pdfContext = ''
+    // Montar conteúdo do usuário (texto + PDF se disponível)
+    const userContent: any[] = []
+    let hasPdfContent = false
+
+    // Se tem PDF, baixar e enviar como documento para o Claude ler
     if (pdfId) {
       const { data: pdf } = await supabase
         .from('pdf_library')
-        .select('name, extracted_text')
+        .select('name, file_url, extracted_text')
         .eq('id', pdfId)
         .single()
 
-      if (pdf?.extracted_text) {
-        pdfContext = `\n\nDocumento de referência "${pdf.name}":\n${pdf.extracted_text.slice(0, 8000)}`
+      if (pdf) {
+        // Prioridade 1: texto já extraído (se existir)
+        if (pdf.extracted_text) {
+          userContent.push({
+            type: 'text',
+            text: `--- DOCUMENTO DO CLIENTE: "${pdf.name}" ---\n${pdf.extracted_text.slice(0, 12000)}\n--- FIM DO DOCUMENTO ---`,
+          })
+          hasPdfContent = true
+        }
+        // Prioridade 2: baixar o PDF e enviar como base64 pro Claude
+        else if (pdf.file_url) {
+          try {
+            const pdfResponse = await fetch(pdf.file_url)
+            if (pdfResponse.ok) {
+              const pdfBuffer = await pdfResponse.arrayBuffer()
+              const pdfBase64 = btoa(
+                String.fromCharCode(...new Uint8Array(pdfBuffer))
+              )
+              userContent.push({
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
+                  data: pdfBase64,
+                },
+              })
+              hasPdfContent = true
+            }
+          } catch (e) {
+            console.error('Erro ao baixar PDF:', e.message)
+            // Continua sem o PDF
+          }
+        }
       }
     }
 
-    // Chamar Claude (Anthropic Messages API)
-    const systemPrompt = `Você é um redator especializado em comunicação financeira via WhatsApp para assessores de investimentos.
+    // Prompt do usuário
+    userContent.push({
+      type: 'text',
+      text: hasPdfContent
+        ? `INSTRUÇÃO DO ASSESSOR:\n${prompt}\n\nResponda APENAS com o texto da mensagem, sem explicações, sem aspas.`
+        : `INSTRUÇÃO DO ASSESSOR:\n${prompt}\n\nATENÇÃO: Nenhum documento do cliente foi fornecido. Crie uma mensagem GENÉRICA sem citar números, valores, rentabilidade ou dados específicos.\n\nResponda APENAS com o texto da mensagem, sem explicações, sem aspas.`,
+    })
 
-Regras:
-- Escreva mensagens curtas e diretas, adequadas para WhatsApp
-- Use linguagem profissional mas acessível
-- Não use markdown, apenas texto puro
-- Use {{nome}} onde o nome do destinatário deve aparecer
-- Máximo 500 caracteres por mensagem
-- Tom: confiante, educativo, próximo
-- Se houver um PDF de referência, extraia os pontos mais relevantes e incorpore na mensagem
-- Não invente dados, use apenas o que está no documento`
+    // System prompt rigoroso contra alucinação
+    const systemPrompt = `Você é um redator de mensagens de WhatsApp para assessores de investimentos.
 
-    const userPrompt = `Crie uma mensagem de WhatsApp com base nesta instrução:
+REGRAS OBRIGATÓRIAS:
+1. Use SOMENTE dados que estão no documento do cliente. NUNCA invente números, valores, rentabilidade, nomes de fundos ou qualquer dado financeiro.
+2. Se o documento não contém a informação pedida, diga algo genérico como "seus investimentos" — NUNCA fabrique dados.
+3. Mensagem curta e direta, adequada para WhatsApp (máximo 500 caracteres).
+4. Use {{nome}} onde o nome do destinatário deve aparecer.
+5. Texto puro, sem markdown, sem formatação especial, sem aspas.
+6. Tom: profissional, próximo, confiante. Linguagem acessível.
+7. NÃO inclua saudações longas, emojis excessivos ou frases genéricas de coaching financeiro.
+8. Se houver dados no PDF, cite-os de forma resumida e precisa.
 
-${prompt}${pdfContext}
-
-Responda APENAS com o texto da mensagem, sem explicações.`
+PROIBIDO: inventar valores, percentuais, nomes de ativos, datas ou qualquer informação que não esteja explicitamente no documento fornecido.`
 
     const claudeResponse = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -79,8 +118,8 @@ Responda APENAS com o texto da mensagem, sem explicações.`
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 600,
         system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
-        temperature: 0.7,
+        messages: [{ role: 'user', content: userContent }],
+        temperature: 0.3,
       }),
     })
 
