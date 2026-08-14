@@ -1,6 +1,6 @@
 // Supabase Edge Function: send-messages
 // Processa fila de mensagens e envia via Wasender API
-// Executada via cron (pg_cron) a cada minuto OU chamada direta para envio imediato
+// Docs: https://wasenderapi.com/api-docs/messages/send-text-message
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
@@ -168,18 +168,19 @@ async function processQueue(supabase: any) {
 }
 
 async function sendViaWasender(apiKey: string, phone: string, message: string, mediaUrl?: string) {
-  // Documentação Wasender: https://wasender.dev/docs
+  // Docs: https://wasenderapi.com/api-docs/messages/send-text-message
   const payload: any = {
     to: phone,
-    message,
+    text: message,
   }
 
+  // Se tem mídia (imagem), adiciona imageUrl
+  // Docs: https://wasenderapi.com/api-docs/messages/send-image-message
   if (mediaUrl) {
-    payload.mediaUrl = mediaUrl
-    payload.type = 'media'
+    payload.imageUrl = mediaUrl
   }
 
-  const response = await fetch('https://api.wasender.dev/v1/messages/send', {
+  const response = await fetch('https://www.wasenderapi.com/api/send-message', {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${apiKey}`,
