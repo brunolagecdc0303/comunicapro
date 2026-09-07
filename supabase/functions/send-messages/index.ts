@@ -3,9 +3,18 @@
 // Docs: https://wasenderapi.com/api-docs/messages/send-text-message
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { extractBearerToken, isServiceRoleToken, callerBelongsToTeam } from '../_shared/auth.ts'
+
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
+const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+
+// Restrinja ao domínio real do app: supabase functions secrets set ALLOWED_ORIGIN=https://seuapp.netlify.app
+// Sem essa secret configurada, cai em '*' (mesmo comportamento de antes) — configure em produção.
+const ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*'
+const MAX_ATTEMPTS = 3
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
@@ -14,20 +23,27 @@ Deno.serve(async (req) => {
     return new Response('ok', { headers: corsHeaders })
   }
 
-  const supabase = createClient(
-    Deno.env.get('SUPABASE_URL')!,
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-  )
+  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
+  const callerToken = extractBearerToken(req)
 
   try {
     const body = await req.json().catch(() => ({}))
 
     // Modo 1: Envio direto (chamado pela UI de "Nova Mensagem")
+    // Precisa vir de um usuário autenticado que pertence ao teamId informado —
+    // nunca confiamos no teamId do corpo da requisição sozinho.
     if (body.messages && body.teamId) {
+      const authorized = await callerBelongsToTeam(callerToken, body.teamId)
+      if (!authorized) {
+        return unauthorized()
+      }
       return await sendDirect(supabase, body.messages, body.teamId)
     }
 
-    // Modo 2: Processar fila (chamado pelo cron)
+    // Modo 2: Processar fila (chamado só pelo cron, com a Service Role Key)
+    if (!isServiceRoleToken(callerToken)) {
+      return unauthorized()
+    }
     return await processQueue(supabase)
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message }), {
@@ -36,6 +52,13 @@ Deno.serve(async (req) => {
     })
   }
 })
+
+function unauthorized() {
+  return new Response(JSON.stringify({ error: 'Não autorizado' }), {
+    status: 401,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  })
+}
 
 async function sendDirect(
   supabase: any,
@@ -169,9 +192,18 @@ async function processQueue(supabase: any) {
         metadata: result,
       })
     } catch (err) {
+      // Nem todo erro é definitivo: tenta de novo até MAX_ATTEMPTS vezes,
+      // com um pequeno intervalo crescente, antes de desistir da mensagem.
+      const attempts = (msg.attempts || 0) + 1
+      const giveUp = attempts >= MAX_ATTEMPTS
       await supabase.from('message_queue').update({
-        status: 'failed',
-        error_message: err.message,
+        status: giveUp ? 'failed' : 'pending',
+        attempts,
+        last_attempt_at: new Date().toISOString(),
+        last_error: err.message,
+        error_message: giveUp ? err.message : null,
+        // Backoff simples: espera mais a cada nova tentativa antes de tentar de novo
+        ...(giveUp ? {} : { scheduled_at: new Date(Date.now() + attempts * 5 * 60 * 1000).toISOString() }),
       }).eq('id', msg.id)
     }
 

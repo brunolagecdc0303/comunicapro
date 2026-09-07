@@ -7,10 +7,19 @@
 // porque apagar a linha em storage.objects sozinha não libera o arquivo no bucket.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { extractBearerToken, isServiceRoleToken } from '../_shared/auth.ts'
 
 const RETENTION_DAYS = 7
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
+  // Só o cron (usando a Service Role Key) pode disparar a limpeza.
+  if (!isServiceRoleToken(extractBearerToken(req))) {
+    return new Response(JSON.stringify({ error: 'Não autorizado' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,

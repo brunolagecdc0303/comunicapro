@@ -17,13 +17,24 @@ export default function Config() {
 
   useEffect(() => {
     if (team) {
-      setWasenderKey(team.wasender_api_key || '')
-      setClaudeKey(team.claude_api_key || '')
       setDelay(team.settings?.delay_between_messages || 5)
       setDailyLimit(team.settings?.daily_limit || 500)
+      loadKeys()
       loadMembers()
     }
   }, [team])
+
+  // Chaves de API não ficam no estado global do app (useAuth) — só são buscadas
+  // aqui, na tela onde de fato são exibidas/editadas.
+  async function loadKeys() {
+    const { data } = await supabase
+      .from('teams')
+      .select('wasender_api_key, claude_api_key')
+      .eq('id', team.id)
+      .single()
+    setWasenderKey(data?.wasender_api_key || '')
+    setClaudeKey(data?.claude_api_key || '')
+  }
 
   async function loadMembers() {
     const { data } = await supabase

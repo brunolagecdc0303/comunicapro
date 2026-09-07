@@ -26,9 +26,12 @@ export function AuthProvider({ children }) {
   }, [])
 
   async function loadTeam(userId) {
+    // Não busca wasender_api_key/claude_api_key aqui: essas chaves ficam restritas
+    // à tela de Configurações, que as busca sob demanda (ver Config.jsx). Evita
+    // manter segredos na memória/estado global do app em toda página.
     const { data } = await supabase
       .from('team_members')
-      .select('team_id, role, teams(*)')
+      .select('team_id, role, teams(id, name, settings)')
       .eq('user_id', userId)
       .limit(1)
       .single()
