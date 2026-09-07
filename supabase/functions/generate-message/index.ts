@@ -44,7 +44,7 @@ Deno.serve(async (req) => {
     if (pdfId) {
       const { data: pdf } = await supabase
         .from('pdf_library')
-        .select('name, file_url, extracted_text')
+        .select('name, storage_path, file_url, extracted_text')
         .eq('id', pdfId)
         .single()
 
@@ -57,12 +57,15 @@ Deno.serve(async (req) => {
           })
           hasPdfContent = true
         }
-        // Prioridade 2: baixar o PDF e enviar como base64 pro Claude
-        else if (pdf.file_url) {
-          try {
-            const pdfResponse = await fetch(pdf.file_url)
-            if (pdfResponse.ok) {
-              const pdfBuffer = await pdfResponse.arrayBuffer()
+        // Prioridade 2: baixar o PDF do Storage (bucket privado) e enviar como base64 pro Claude.
+        // Usa o client com Service Role, que ignora RLS/policies do bucket.
+        else {
+          const path = pdf.storage_path || pathFromLegacyUrl(pdf.file_url)
+          if (path) {
+            try {
+              const { data: fileBlob, error: downloadError } = await supabase.storage.from('pdfs').download(path)
+              if (downloadError) throw downloadError
+              const pdfBuffer = await fileBlob.arrayBuffer()
               const pdfBase64 = btoa(
                 String.fromCharCode(...new Uint8Array(pdfBuffer))
               )
@@ -75,10 +78,10 @@ Deno.serve(async (req) => {
                 },
               })
               hasPdfContent = true
+            } catch (e) {
+              console.error('Erro ao baixar PDF:', e.message)
+              // Continua sem o PDF
             }
-          } catch (e) {
-            console.error('Erro ao baixar PDF:', e.message)
-            // Continua sem o PDF
           }
         }
       }
@@ -146,3 +149,11 @@ PROIBIDO: inventar valores, percentuais, nomes de ativos, datas ou qualquer info
     )
   }
 })
+
+// Compatibilidade com registros criados antes do bucket "pdfs" ficar privado,
+// quando só a URL pública completa era guardada (não o caminho isolado).
+function pathFromLegacyUrl(fileUrl: string | null | undefined): string | null {
+  if (!fileUrl) return null
+  const match = fileUrl.match(/\/pdfs\/(.+)$/)
+  return match ? match[1] : null
+}

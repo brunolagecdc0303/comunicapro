@@ -209,16 +209,14 @@ export async function uploadPDF(teamId, file, userId) {
     .upload(path, file)
   if (uploadError) throw uploadError
 
-  const { data: urlData } = supabase.storage
-    .from('pdfs')
-    .getPublicUrl(path)
-
+  // Bucket "pdfs" é privado (documentos de clientes) — guardamos o caminho,
+  // não uma URL pública. O acesso é feito sob demanda com createSignedUrl.
   const { data, error } = await supabase
     .from('pdf_library')
     .insert({
       team_id: teamId,
       name: file.name,
-      file_url: urlData.publicUrl,
+      storage_path: path,
       file_size: file.size,
       client_code: clientCode,
       created_by: userId,
@@ -227,6 +225,16 @@ export async function uploadPDF(teamId, file, userId) {
     .single()
   if (error) throw error
   return data
+}
+
+// Gera uma URL temporária para acessar um PDF do bucket privado.
+// Usada na hora de enviar o documento (ex.: pra Wasender buscar o arquivo).
+export async function getPDFSignedUrl(storagePath, expiresInSeconds = 600) {
+  const { data, error } = await supabase.storage
+    .from('pdfs')
+    .createSignedUrl(storagePath, expiresInSeconds)
+  if (error) throw error
+  return data.signedUrl
 }
 
 // Upload em massa de PDFs com extração de código do cliente
