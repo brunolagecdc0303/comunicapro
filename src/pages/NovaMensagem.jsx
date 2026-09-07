@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../hooks/useAuth'
-import { getContacts, getPDFs, uploadPDFsBulk, matchContactsPDFs, generateBulkMessages, extractClientCode } from '../lib/api'
+import { getContacts, getPDFs, uploadPDFsBulk, matchContactsPDFs, generateBulkMessages, extractClientCode, getPDFSignedUrl } from '../lib/api'
 import { supabase } from '../lib/supabase'
 import { Send, Sparkles, Upload, FileText, CheckCircle, XCircle, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -188,12 +188,14 @@ export default function NovaMensagem() {
     setSendProgress({ done: 0, total: toSend.length })
 
     try {
-      const messages = toSend.map(m => ({
+      // O bucket de PDFs é privado — gera uma URL temporária pra Wasender
+      // conseguir buscar o documento na hora do envio.
+      const messages = await Promise.all(toSend.map(async m => ({
         phone: m.contact.phone,
         content: m.message.replace('{{nome}}', m.contact.name),
-        documentUrl: m.pdf?.file_url || null,
+        documentUrl: m.pdf?.storage_path ? await getPDFSignedUrl(m.pdf.storage_path) : null,
         fileName: m.pdf?.name || null,
-      }))
+      })))
 
       const { data, error } = await supabase.functions.invoke('send-messages', {
         body: { messages, teamId: team.id }
