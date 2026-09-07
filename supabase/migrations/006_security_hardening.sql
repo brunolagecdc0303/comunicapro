@@ -22,6 +22,11 @@ alter table public.message_queue add column if not exists last_error text;
 -- owner/admin pode adicionar, promover/rebaixar ou remover outros membros;
 -- ninguém altera o próprio role; e qualquer um pode sair do time sozinho.
 -- ============================================
+-- Achado durante o deploy: a RLS de team_members estava desabilitada na tabela
+-- (a policy "team_access" existia, mas nunca era de fato aplicada — a tabela
+-- ficava totalmente aberta para os roles anon/authenticated). Habilita agora.
+alter table public.team_members enable row level security;
+
 drop policy if exists "team_access" on public.team_members;
 
 create policy "team_members_select" on public.team_members
