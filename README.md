@@ -9,7 +9,8 @@ Plataforma de comunicação em massa via WhatsApp para assessores de investiment
 ## Funcionalidades
 
 - **Mensagens em massa** via Wasender API com delay anti-bloqueio
-- **Agendamento** de campanhas para data/hora específica
+- **Envios Programados** — agende campanhas para data/hora específica, acompanhe o status (programado, processando, concluído, erro, cancelado) e cancele antes do horário
+- **Processamento automático** da fila via `pg_cron` a cada minuto, com proteção contra envio duplicado (reserva atômica) e recuperação de mensagens travadas
 - **Import de contatos** via CSV (aceita variações de colunas)
 - **Geração de mensagens com IA** (Gemini) usando PDFs como referência
 - **Templates** reutilizáveis com personalização ({{nome}})
@@ -24,7 +25,7 @@ Plataforma de comunicação em massa via WhatsApp para assessores de investiment
 ### 1. Supabase
 
 1. Crie um projeto em [supabase.com](https://supabase.com)
-2. Vá em **SQL Editor** e execute o conteúdo de `supabase/migrations/001_initial_schema.sql`
+2. Vá em **SQL Editor** e execute, nesta ordem, o conteúdo de cada arquivo em `supabase/migrations/` (001, 002, 003, 004...)
 3. Em **Storage**, crie um bucket chamado `pdfs` (público)
 4. Em **Authentication → Settings**, configure o email provider
 5. Crie seu primeiro usuário em **Authentication → Users**
@@ -58,24 +59,18 @@ supabase functions deploy generate-message
 
 ### 3. Cron (processar fila a cada minuto)
 
-No **SQL Editor** do Supabase:
+A migration `004_scheduled_sending.sql` já cria o job do `pg_cron` que roda a cada minuto.
+Ela **não** guarda a Service Role Key em texto no SQL — a chave fica no **Vault** do
+Supabase, fora do git. Depois de rodar a migration 004, no **SQL Editor**, rode uma
+única vez (troque pelos valores reais do seu projeto):
 
 ```sql
-SELECT cron.schedule(
-  'process-message-queue',
-  '* * * * *',
-  $$
-  SELECT net.http_post(
-    'https://SEU_PROJECT.supabase.co/functions/v1/send-messages',
-    '{}',
-    'application/json',
-    ARRAY[
-      net.http_header('Authorization', 'Bearer SEU_SERVICE_ROLE_KEY')
-    ]
-  )
-  $$
-);
+select vault.create_secret('https://SEU_PROJETO.supabase.co', 'comunicapro_project_url');
+select vault.create_secret('SUA_SERVICE_ROLE_KEY', 'comunicapro_service_role_key');
 ```
+
+Para conferir se o job está ativo: `select * from cron.job where jobname = 'process-message-queue';`
+Para ver as últimas execuções: `select * from cron.job_run_details order by start_time desc limit 10;`
 
 ### 4. Frontend
 

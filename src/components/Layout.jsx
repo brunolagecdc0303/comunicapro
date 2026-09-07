@@ -2,7 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import {
   LayoutDashboard, Users, MessageSquare, Send,
-  FileText, Settings, LogOut, Menu, X
+  FileText, Settings, LogOut, Menu, X, CalendarClock
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -11,6 +11,7 @@ const nav = [
   { to: '/contatos', icon: Users, label: 'Contatos' },
   { to: '/templates', icon: FileText, label: 'Templates' },
   { to: '/campanhas', icon: Send, label: 'Campanhas' },
+  { to: '/envios-programados', icon: CalendarClock, label: 'Envios Programados' },
   { to: '/mensagens', icon: MessageSquare, label: 'Nova Mensagem' },
   { to: '/config', icon: Settings, label: 'Configurações' },
 ]
