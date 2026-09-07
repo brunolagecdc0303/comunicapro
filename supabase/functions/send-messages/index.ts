@@ -59,7 +59,8 @@ async function sendDirect(
   const delay = (team.settings?.delay_between_messages || 5) * 1000
   const results = []
 
-  for (const msg of messages) {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]
     try {
       const result = await sendViaWasender(team.wasender_api_key, msg.phone, msg.content, msg.mediaUrl, msg.documentUrl, msg.fileName)
       results.push({ phone: msg.phone, status: 'sent', response: result })
@@ -83,8 +84,8 @@ async function sendDirect(
       })
     }
 
-    // Delay entre mensagens
-    if (messages.indexOf(msg) < messages.length - 1) {
+    // Delay entre mensagens (não espera depois da última)
+    if (i < messages.length - 1) {
       await new Promise(r => setTimeout(r, delay))
     }
   }
@@ -95,25 +96,40 @@ async function sendDirect(
 }
 
 async function processQueue(supabase: any) {
-  // Buscar mensagens pendentes que já passaram do horário agendado
-  const { data: pending } = await supabase
-    .from('message_queue')
-    .select('*, campaigns(team_id, delay_seconds)')
-    .eq('status', 'pending')
-    .lte('scheduled_at', new Date().toISOString())
-    .order('scheduled_at')
-    .limit(50)
+  // Antes de processar, devolve à fila mensagens que ficaram presas em "sending"
+  // (ex.: uma execução anterior foi interrompida no meio do envio).
+  const { data: recovered } = await supabase.rpc('recover_stuck_messages', { p_minutes: 10 })
 
-  if (!pending || pending.length === 0) {
-    return new Response(JSON.stringify({ processed: 0 }), {
+  // Reserva atomicamente as próximas mensagens pendentes já vencidas.
+  // claim_pending_messages usa "for update skip locked", então duas execuções
+  // do cron rodando ao mesmo tempo nunca pegam a mesma mensagem (sem duplicidade).
+  const { data: claimed, error: claimError } = await supabase.rpc('claim_pending_messages', { p_limit: 50 })
+
+  if (claimError) {
+    return new Response(JSON.stringify({ error: claimError.message, recovered: recovered || 0 }), {
+      status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     })
   }
 
-  // Agrupar por team_id para buscar API keys
-  const teamIds = [...new Set(pending.map((p: any) => p.campaigns?.team_id).filter(Boolean))]
-  const teams: Record<string, any> = {}
+  if (!claimed || claimed.length === 0) {
+    return new Response(JSON.stringify({ processed: 0, recovered: recovered || 0 }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    })
+  }
 
+  // Buscar team_id e delay configurado de cada campanha envolvida
+  const campaignIds = [...new Set(claimed.map((m: any) => m.campaign_id).filter(Boolean))]
+  const { data: campaigns } = await supabase
+    .from('campaigns')
+    .select('id, team_id, delay_seconds')
+    .in('id', campaignIds)
+  const campaignById: Record<string, any> = {}
+  for (const c of campaigns || []) campaignById[c.id] = c
+
+  // Buscar API key de cada time envolvido
+  const teamIds = [...new Set((campaigns || []).map((c: any) => c.team_id).filter(Boolean))]
+  const teams: Record<string, any> = {}
   for (const tid of teamIds) {
     const { data } = await supabase.from('teams').select('wasender_api_key, settings').eq('id', tid).single()
     if (data) teams[tid] = data
@@ -121,13 +137,20 @@ async function processQueue(supabase: any) {
 
   let processed = 0
 
-  for (const msg of pending) {
-    const teamId = msg.campaigns?.team_id
-    const team = teams[teamId]
-    if (!team?.wasender_api_key) continue
+  for (let i = 0; i < claimed.length; i++) {
+    const msg = claimed[i]
+    const campaign = campaignById[msg.campaign_id]
+    const teamId = campaign?.team_id
+    const team = teamId ? teams[teamId] : null
 
-    // Marcar como enviando
-    await supabase.from('message_queue').update({ status: 'sending' }).eq('id', msg.id)
+    if (!team?.wasender_api_key) {
+      // Sem API key configurada: devolve pra fila como falha (não fica travada em "sending")
+      await supabase.from('message_queue').update({
+        status: 'failed',
+        error_message: 'Wasender API key não configurada para o time',
+      }).eq('id', msg.id)
+      continue
+    }
 
     try {
       const result = await sendViaWasender(team.wasender_api_key, msg.phone, msg.content, msg.media_url)
@@ -153,16 +176,22 @@ async function processQueue(supabase: any) {
     }
 
     processed++
-    const delay = (team.settings?.delay_between_messages || 5) * 1000
-    await new Promise(r => setTimeout(r, delay))
+    // Espera o intervalo configurado antes da próxima mensagem (não espera após a última)
+    if (i < claimed.length - 1) {
+      const delay = (campaign?.delay_seconds ?? team.settings?.delay_between_messages ?? 5) * 1000
+      await new Promise(r => setTimeout(r, delay))
+    }
   }
 
-  // Atualizar campanhas concluídas
+  // Atualizar campanhas concluídas (sem itens pendentes/enviando na fila)
+  let campaignsCompleted = 0
   for (const tid of teamIds) {
-    await supabase.rpc('check_completed_campaigns', { p_team_id: tid }).catch(() => {})
+    const { data, error } = await supabase.rpc('check_completed_campaigns', { p_team_id: tid })
+    if (error) console.error('check_completed_campaigns failed for team', tid, error.message)
+    else campaignsCompleted += data || 0
   }
 
-  return new Response(JSON.stringify({ processed }), {
+  return new Response(JSON.stringify({ processed, recovered: recovered || 0, campaignsCompleted }), {
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   })
 }

@@ -121,6 +121,14 @@ export async function createCampaign(campaign) {
   return data
 }
 
+// Cancela um envio programado: mensagens ainda pendentes não são enviadas,
+// as que já saíram permanecem como estavam. Valida no backend que o usuário
+// pertence ao time da campanha.
+export async function cancelCampaign(campaignId) {
+  const { error } = await supabase.rpc('cancel_campaign', { p_campaign_id: campaignId })
+  if (error) throw error
+}
+
 export async function scheduleCampaign(campaignId, contactIds, content, mediaUrl, scheduledAt) {
   const messages = contactIds.map(c => ({
     campaign_id: campaignId,
