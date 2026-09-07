@@ -3,9 +3,14 @@
 // Claude lê o PDF nativamente via base64 — sem necessidade de extração de texto
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { extractBearerToken, callerBelongsToTeam } from '../_shared/auth.ts'
+
+// Restrinja ao domínio real do app: supabase functions secrets set ALLOWED_ORIGIN=https://seuapp.netlify.app
+// Sem essa secret configurada, cai em '*' (mesmo comportamento de antes) — configure em produção.
+const ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*'
 
 const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
@@ -16,6 +21,16 @@ Deno.serve(async (req) => {
 
   try {
     const { prompt, pdfId, teamId } = await req.json()
+
+    // Nunca confia no teamId do corpo sozinho: exige que quem chamou seja
+    // um usuário autenticado membro desse time.
+    const authorized = await callerBelongsToTeam(extractBearerToken(req), teamId)
+    if (!authorized) {
+      return new Response(JSON.stringify({ error: 'Não autorizado' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      })
+    }
 
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL')!,

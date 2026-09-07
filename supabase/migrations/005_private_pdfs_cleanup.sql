@@ -26,8 +26,19 @@ update storage.buckets set public = false where id = 'pdfs';
 -- RLS do Storage: cada time só acessa os PDFs na sua própria pasta
 -- Os arquivos são salvos como "<team_id>/<arquivo>", então o primeiro
 -- segmento do caminho identifica o time dono do arquivo.
+--
+-- RLS já vem habilitada por padrão em storage.objects nos projetos Supabase
+-- (não precisa/não dá pra rodar ALTER TABLE ... ENABLE ROW LEVEL SECURITY
+-- aqui — exige ser dono da tabela, e o role usado pelas migrations não é).
+--
+-- Achado durante o deploy: existiam duas policies antigas nesse bucket que
+-- contradiziam a privacidade que esta migration configura —
+-- "public_read_pdfs" liberava leitura de QUALQUER PDF do bucket sem login
+-- nenhum, e "team_upload_pdfs" deixava qualquer membro de qualquer time
+-- fazer upload em qualquer pasta (não só na do próprio time). Removidas.
 -- ============================================
-alter table storage.objects enable row level security;
+drop policy if exists "public_read_pdfs" on storage.objects;
+drop policy if exists "team_upload_pdfs" on storage.objects;
 
 drop policy if exists "pdfs_team_select" on storage.objects;
 create policy "pdfs_team_select" on storage.objects

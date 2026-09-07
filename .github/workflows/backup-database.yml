@@ -1,0 +1,35 @@
+name: Backup do banco (Supabase)
+
+# Backup semanal do Postgres, pra não depender só do Supabase.
+# Requer o secret SUPABASE_DB_URL no repositório (Settings → Secrets and
+# variables → Actions → New repository secret). O valor é a "Connection
+# string" (URI, modo "Session pooler" ou direta) em Supabase → Project
+# Settings → Database, com a senha do banco incluída.
+on:
+  schedule:
+    - cron: '0 5 * * 0' # todo domingo, 05:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Instalar cliente PostgreSQL
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Dump do banco
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Secret SUPABASE_DB_URL não configurado. Veja o README (seção Backup)."
+            exit 1
+          fi
+          pg_dump "$DATABASE_URL" --no-owner --no-privileges -F c -f "comunicapro-backup-$(date +%Y%m%d).dump"
+
+      - name: Publicar backup como artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: comunicapro-backup-${{ github.run_id }}
+          path: comunicapro-backup-*.dump
+          retention-days: 90
