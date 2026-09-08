@@ -8,7 +8,7 @@
  * está marcado — ex.: marcou "Seguro de vida nacional", pergunta a seguradora.
  */
 export const PRODUCTS = [
-  { field: 'mb',                    label: 'MB',                     short: 'MB' },
+  { field: 'mb',                    label: 'Mercado Bitcoin',        short: 'Mercado Bitcoin' },
   { field: 'conta_xp',              label: 'Conta XP',               short: 'XP' },
   { field: 'conta_outra_corretora', label: 'Conta em outra corretora', short: 'Outra corretora',
     detail: { field: 'outra_corretora', label: 'Qual corretora?' } },
@@ -21,7 +21,8 @@ export const PRODUCTS = [
     detail: { field: 'operadora_saude', label: 'Qual operadora?' } },
   { field: 'cambio',                label: 'Câmbio',                 short: 'Câmbio' },
   { field: 'eqseed',                label: 'EqSeed',                 short: 'EqSeed' },
-  { field: 'az_guidance',           label: 'AZ Guidance',            short: 'AZ Guid.' },
+  { field: 'az_guidance',           label: 'AZ Guidance',            short: 'AZ Guidance',
+    hint: 'Gestora de patrimônio: consolida as posições que o cliente tem em outras instituições.' },
 ]
 
 export const PRODUCT_FIELDS = PRODUCTS.flatMap(p =>

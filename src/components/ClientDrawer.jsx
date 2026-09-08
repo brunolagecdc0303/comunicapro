@@ -259,6 +259,7 @@ export default function ClientDrawer({ client, tab, onClose, onSaved }) {
                         className="rounded" />
                       {p.label}
                     </label>
+                    {p.hint && <p className="text-xs text-gray-400 ml-6 mt-0.5">{p.hint}</p>}
                     {p.detail && products[p.field] && (
                       <input
                         type="text"

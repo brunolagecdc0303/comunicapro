@@ -389,3 +389,31 @@ export async function deleteFPCycle(cycleId) {
   const { error } = await supabase.from('fp_cycles').delete().eq('id', cycleId)
   if (error) throw error
 }
+
+// ============================================
+// LEMBRETES DE FP
+// ============================================
+// Pré-visualização do que sairia hoje. A função no banco é sempre dry run e
+// só devolve dados do time de quem chamou (checa membership por dentro).
+export async function previewFPReminders(teamId) {
+  const { data, error } = await supabase.rpc('preview_fp_reminders', { p_team_id: teamId })
+  if (error) throw error
+  return data || []
+}
+
+// Salva as configurações do time preservando as chaves que já existiam.
+// Importante: settings é um jsonb único — sobrescrever o objeto inteiro
+// apagaria silenciosamente as configurações de outra tela.
+export async function saveTeamSettings(teamId, patch) {
+  const { data: current, error: readError } = await supabase
+    .from('teams')
+    .select('settings')
+    .eq('id', teamId)
+    .single()
+  if (readError) throw readError
+
+  const merged = { ...(current?.settings || {}), ...patch }
+  const { error } = await supabase.from('teams').update({ settings: merged }).eq('id', teamId)
+  if (error) throw error
+  return merged
+}

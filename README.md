@@ -11,6 +11,9 @@ Plataforma de comunicação em massa via WhatsApp para assessores de investiment
 - **Acompanhamento de clientes** — visão consolidada em formato de planilha, com aba de
   Financial Planning (reunião agendada, FP realizado, em execução, data do próximo FP e os
   principais combinados a monitorar) e aba de produtos contratados; exporta para CSV
+- **Lembretes automáticos de FP** — quando a data do próximo FP se aproxima, o cliente recebe
+  um lembrete no WhatsApp e o assessor recebe o resumo do que saiu. Nasce **desligado**: só
+  vale depois de ativar em Configurações, onde há uma pré-visualização do que sairia hoje
 - **Mensagens em massa** via Wasender API com delay anti-bloqueio
 - **Envios Programados** — agende campanhas para data/hora específica, acompanhe o status (programado, processando, concluído, erro, cancelado) e cancele antes do horário
 - **Processamento automático** da fila via `pg_cron` a cada minuto, com proteção contra envio duplicado (reserva atômica) e recuperação de mensagens travadas
@@ -31,7 +34,7 @@ Plataforma de comunicação em massa via WhatsApp para assessores de investiment
 ### 1. Supabase
 
 1. Crie um projeto em [supabase.com](https://supabase.com)
-2. Vá em **SQL Editor** e execute, nesta ordem, o conteúdo de cada arquivo em `supabase/migrations/` (001, 002, 003, 004, 005, 006, 007, 008...)
+2. Vá em **SQL Editor** e execute, nesta ordem, o conteúdo de cada arquivo em `supabase/migrations/` (001, 002, 003, 004, 005, 006, 007, 008, 009...)
 3. Em **Storage**, crie um bucket chamado `pdfs` (a migration `005_private_pdfs_cleanup.sql` deixa esse bucket privado — não precisa marcar "público" ao criar)
 4. Em **Authentication → Settings**, configure o email provider
 5. Crie seu primeiro usuário em **Authentication → Users**
@@ -71,7 +74,7 @@ supabase secrets set ALLOWED_ORIGIN=https://seuapp.netlify.app
 `SUPABASE_URL`, `SUPABASE_ANON_KEY` e `SUPABASE_SERVICE_ROLE_KEY` já ficam disponíveis
 automaticamente dentro das Edge Functions — não precisa cadastrá-los como secret.
 
-### 3. Cron (processar fila a cada minuto + limpar PDFs todo dia às 02h)
+### 3. Cron (fila a cada minuto, PDFs às 02h, lembretes de FP às 09h)
 
 As migrations `004_scheduled_sending.sql` e `005_private_pdfs_cleanup.sql` já criam os
 jobs do `pg_cron` (fila a cada minuto, limpeza de PDFs diária). Elas **não** guardam a
@@ -83,6 +86,14 @@ valores reais do seu projeto):
 select vault.create_secret('https://SEU_PROJETO.supabase.co', 'comunicapro_project_url');
 select vault.create_secret('SUA_SERVICE_ROLE_KEY', 'comunicapro_service_role_key');
 ```
+
+A migration `009_fp_reminders.sql` cria um terceiro job, `fp-reminders`, que roda às 12:00 UTC
+(09:00 de Brasília) e enfileira os lembretes de FP. Ele chama uma função no próprio banco —
+não precisa de segredo nenhum. E enquanto nenhum time tiver ativado os lembretes em
+Configurações, ele roda e não faz nada.
+
+Os lembretes entram na `message_queue` como qualquer outra mensagem, então herdam o delay
+entre envios, o retry e o log do módulo de envio que já existia.
 
 Para conferir se os jobs estão ativos: `select * from cron.job;`
 Para ver as últimas execuções: `select * from cron.job_run_details order by start_time desc limit 10;`
