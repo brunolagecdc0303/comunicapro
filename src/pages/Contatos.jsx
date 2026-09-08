@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAuth } from '../hooks/useAuth'
 import { getContacts, importContactsCSV, deleteContacts } from '../lib/api'
-import { Upload, Search, Trash2, UserPlus, Download, Check } from 'lucide-react'
+import { Upload, Search, Trash2, UserPlus, Download, Check, ShieldAlert } from 'lucide-react'
 import Papa from 'papaparse'
+import { auditCSV, isValidCPF, redactCPFs } from '../lib/privacy'
 import toast from 'react-hot-toast'
 
 export default function Contatos() {
@@ -15,6 +16,7 @@ export default function Contatos() {
   const [importing, setImporting] = useState(false)
   const [showImportModal, setShowImportModal] = useState(false)
   const [csvPreview, setCsvPreview] = useState(null)
+  const [csvAudit, setCsvAudit] = useState(null)
   const fileRef = useRef()
 
   useEffect(() => {
@@ -60,6 +62,12 @@ export default function Contatos() {
           toast.error('CSV vazio')
           return
         }
+        // Antes de qualquer coisa: checa se o CSV traz documento pessoal.
+        // Colunas como CPF nunca são lidas — o mapeamento abaixo só pega
+        // nome/telefone/email/código/tags, então nada sensível chega ao banco.
+        // A auditoria existe para AVISAR quem está importando.
+        setCsvAudit(auditCSV(results.data))
+
         const mapped = results.data.map(row => {
           const keys = Object.keys(row)
           const findCol = (...names) => {
@@ -69,12 +77,15 @@ export default function Contatos() {
             const partial = keys.find(k => names.some(n => k.toLowerCase().includes(n)))
             return partial ? row[partial] : ''
           }
+          // Uma coluna genérica como "conta" pode vir com CPF no lugar do
+          // código. Se for CPF de verdade, entra vazio em vez de subir.
+          const clientCode = findCol('codigo_cliente', 'client_code', 'codigo', 'código', 'conta', 'code')
           return {
-            client_code: findCol('codigo_cliente', 'client_code', 'codigo', 'código', 'conta', 'code'),
-            name: findCol('nome', 'name'),
+            client_code: isValidCPF(clientCode) ? '' : clientCode,
+            name: redactCPFs(findCol('nome', 'name')),
             phone: findCol('telefone', 'phone', 'celular', 'whatsapp', 'fone'),
             email: findCol('email', 'e-mail'),
-            tags: findCol('tags', 'grupo', 'categoria', 'group'),
+            tags: redactCPFs(findCol('tags', 'grupo', 'categoria', 'group')),
           }
         }).filter(r => r.phone)
 
@@ -94,6 +105,7 @@ export default function Contatos() {
       toast.success(`${imported.length} contatos importados`)
       setShowImportModal(false)
       setCsvPreview(null)
+      setCsvAudit(null)
       await loadContacts()
     } catch (err) {
       toast.error('Erro na importação: ' + (err.message || ''))
@@ -246,9 +258,30 @@ export default function Contatos() {
               <h3 className="font-display font-semibold text-navy-500">
                 Preview da Importação ({csvPreview?.length} contatos)
               </h3>
-              <button onClick={() => { setShowImportModal(false); setCsvPreview(null) }} className="text-gray-400 hover:text-gray-600">✕</button>
+              <button onClick={() => { setShowImportModal(false); setCsvPreview(null); setCsvAudit(null) }} className="text-gray-400 hover:text-gray-600">✕</button>
             </div>
             <div className="flex-1 overflow-auto p-4">
+              {(csvAudit?.blockedColumns?.length > 0 || csvAudit?.rowsWithCPF > 0) && (
+                <div className="flex gap-2 p-3 mb-4 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+                  <ShieldAlert size={16} className="shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-medium">Dados sensíveis ignorados</p>
+                    {csvAudit.blockedColumns.length > 0 && (
+                      <p className="mt-0.5">
+                        Coluna(s) descartada(s): <strong>{csvAudit.blockedColumns.join(', ')}</strong>.
+                      </p>
+                    )}
+                    {csvAudit.rowsWithCPF > 0 && (
+                      <p className="mt-0.5">
+                        {csvAudit.rowsWithCPF} linha(s) trazem CPF em algum campo — o CPF é removido, o contato é importado normalmente.
+                      </p>
+                    )}
+                    <p className="mt-0.5 text-amber-700">
+                      Só nome, telefone, email, código do cliente e tags vão para o banco.
+                    </p>
+                  </div>
+                </div>
+              )}
               <table className="w-full text-sm">
                 <thead>
                   <tr className="bg-gray-50">
@@ -278,7 +311,7 @@ export default function Contatos() {
               )}
             </div>
             <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
-              <button onClick={() => { setShowImportModal(false); setCsvPreview(null) }} className="btn-secondary">
+              <button onClick={() => { setShowImportModal(false); setCsvPreview(null); setCsvAudit(null) }} className="btn-secondary">
                 Cancelar
               </button>
               <button onClick={handleImport} disabled={importing} className="btn-primary gap-1.5">

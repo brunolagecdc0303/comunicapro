@@ -313,3 +313,79 @@ export function extractClientCode(filename) {
   const match = name.match(/(\d{4,})/)
   return match ? match[1] : null
 }
+
+// ============================================
+// ACOMPANHAMENTO DE CLIENTES (FP + Produtos)
+// ============================================
+// Carrega as três fontes em paralelo e junta no cliente. São poucas centenas
+// de linhas por time — não compensa criar view no banco (e uma view exigiria
+// security_invoker pra não furar a RLS).
+export async function getClientTracking(teamId) {
+  const [contactsRes, productsRes, cyclesRes] = await Promise.all([
+    supabase.from('contacts').select('id, name, phone, email, client_code, tags').eq('team_id', teamId).order('name'),
+    supabase.from('client_products').select('*').eq('team_id', teamId),
+    supabase.from('fp_cycles').select('*').eq('team_id', teamId).order('created_at', { ascending: false }),
+  ])
+  if (contactsRes.error) throw contactsRes.error
+  if (productsRes.error) throw productsRes.error
+  if (cyclesRes.error) throw cyclesRes.error
+
+  const productsByContact = new Map(productsRes.data.map(p => [p.contact_id, p]))
+
+  // cycles já vem ordenado do mais novo pro mais antigo; o primeiro de cada
+  // contato é o ciclo atual, o resto é histórico.
+  const cyclesByContact = new Map()
+  for (const cycle of cyclesRes.data) {
+    if (!cyclesByContact.has(cycle.contact_id)) cyclesByContact.set(cycle.contact_id, [])
+    cyclesByContact.get(cycle.contact_id).push(cycle)
+  }
+
+  return contactsRes.data.map(contact => {
+    const cycles = cyclesByContact.get(contact.id) || []
+    return {
+      ...contact,
+      products: productsByContact.get(contact.id) || null,
+      currentFP: cycles[0] || null,
+      fpHistory: cycles,
+    }
+  })
+}
+
+export async function saveClientProducts(teamId, contactId, values, userId) {
+  const { data, error } = await supabase
+    .from('client_products')
+    .upsert(
+      { team_id: teamId, contact_id: contactId, ...values, updated_by: userId },
+      { onConflict: 'contact_id' }
+    )
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function createFPCycle(teamId, contactId, values, userId) {
+  const { data, error } = await supabase
+    .from('fp_cycles')
+    .insert({ team_id: teamId, contact_id: contactId, ...values, created_by: userId })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function updateFPCycle(cycleId, values) {
+  const { data, error } = await supabase
+    .from('fp_cycles')
+    .update(values)
+    .eq('id', cycleId)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+export async function deleteFPCycle(cycleId) {
+  const { error } = await supabase.from('fp_cycles').delete().eq('id', cycleId)
+  if (error) throw error
+}

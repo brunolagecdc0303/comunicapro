@@ -8,6 +8,9 @@ Plataforma de comunicação em massa via WhatsApp para assessores de investiment
 
 ## Funcionalidades
 
+- **Acompanhamento de clientes** — visão consolidada em formato de planilha, com aba de
+  Financial Planning (reunião agendada, FP realizado, em execução, data do próximo FP e os
+  principais combinados a monitorar) e aba de produtos contratados; exporta para CSV
 - **Mensagens em massa** via Wasender API com delay anti-bloqueio
 - **Envios Programados** — agende campanhas para data/hora específica, acompanhe o status (programado, processando, concluído, erro, cancelado) e cancele antes do horário
 - **Processamento automático** da fila via `pg_cron` a cada minuto, com proteção contra envio duplicado (reserva atômica) e recuperação de mensagens travadas
@@ -28,7 +31,7 @@ Plataforma de comunicação em massa via WhatsApp para assessores de investiment
 ### 1. Supabase
 
 1. Crie um projeto em [supabase.com](https://supabase.com)
-2. Vá em **SQL Editor** e execute, nesta ordem, o conteúdo de cada arquivo em `supabase/migrations/` (001, 002, 003, 004, 005, 006...)
+2. Vá em **SQL Editor** e execute, nesta ordem, o conteúdo de cada arquivo em `supabase/migrations/` (001, 002, 003, 004, 005, 006, 007, 008...)
 3. Em **Storage**, crie um bucket chamado `pdfs` (a migration `005_private_pdfs_cleanup.sql` deixa esse bucket privado — não precisa marcar "público" ao criar)
 4. Em **Authentication → Settings**, configure o email provider
 5. Crie seu primeiro usuário em **Authentication → Users**
@@ -102,10 +105,27 @@ npm run dev
 
 ### 5. Deploy no Netlify
 
-1. Conecte o repo no [Netlify](https://netlify.com)
-2. Build command: `npm run build`
-3. Publish directory: `dist`
-4. Environment variables: adicione `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY`
+O Netlify **não** roda o build deste projeto: o `netlify.toml` publica o `dist/` que está
+versionado no repositório (e a raiz guarda uma cópia, usada nos deploys via API).
+
+Por isso, **toda mudança em `src/` só chega no ar depois de rodar o build e commitar o
+resultado**:
+
+```bash
+npm run build            # gera dist/ e atualiza a cópia na raiz
+git add dist assets index.html src
+git commit -m "..."
+```
+
+O `npm run build` (`scripts/build.mjs`) cuida da ordem certa — `index.dev.html` é a fonte,
+`index.html` da raiz é artefato — e **falha** se `VITE_SUPABASE_URL`/`VITE_SUPABASE_ANON_KEY`
+não estiverem no `.env`. Isso é proposital: essas variáveis são embutidas no bundle em tempo
+de build, e um build sem elas geraria um site quebrado — que, por ir versionado, chegaria em
+produção sem aviso.
+
+Se preferir que o Netlify passe a buildar sozinho, troque o `command` do `netlify.toml` para
+`npm run build:vite`, configure `VITE_SUPABASE_URL` e `VITE_SUPABASE_ANON_KEY` nas variáveis
+de ambiente do painel e pare de versionar o `dist/`.
 
 ---
 
@@ -153,8 +173,20 @@ Maria Santos,31988887777,,prospect
 - **Papéis no time** — só `owner`/`admin` adicionam, promovem ou removem membros; ninguém
   altera o próprio papel; qualquer um pode sair do time sozinho (migration `006`).
 - **RLS consistente** — todas as tabelas (`contacts`, `campaigns`, `message_queue`,
-  `message_log`, `pdf_library`, `teams`, `team_members`, `message_templates`) restringem
-  acesso ao time do usuário autenticado.
+  `message_log`, `pdf_library`, `teams`, `team_members`, `message_templates`,
+  `fp_cycles`, `client_products`) restringem acesso ao time do usuário autenticado.
+- **CPF e documentos nunca sobem** — o banco não tem coluna para CPF, RG, data de
+  nascimento ou conta bancária; o cliente é identificado pelo `client_code` (código da
+  conta). O app aplica a regra na entrada, em `src/lib/privacy.js`:
+  colunas de CSV com nome de documento são descartadas na importação, e os campos de
+  texto livre do acompanhamento avisam e removem o CPF antes de salvar. A validação usa
+  os dígitos verificadores do CPF — um celular brasileiro também tem 11 dígitos e não
+  pode ser confundido com documento.
+- **Repositório público** — este repo é público. Nunca commite `.env`, dumps de banco ou
+  planilhas de cliente. A `VITE_SUPABASE_ANON_KEY` embutida no bundle é pública por
+  design (é a chave *publishable*, feita para rodar no navegador); quem protege os dados
+  é a RLS. A `service_role`, essa sim secreta, só existe no Vault do Supabase e nas
+  Edge Functions.
 - **Atividade real no projeto** — os crons (fila a cada minuto, limpeza diária de PDFs)
   já geram uso legítimo e recorrente do banco, o que ajuda a evitar a pausa por
   inatividade do plano free do Supabase — mas não é garantia absoluta; se o projeto ficar

@@ -7,6 +7,7 @@ import Layout from './components/Layout'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Contatos from './pages/Contatos'
+import Acompanhamento from './pages/Acompanhamento'
 import Templates from './pages/Templates'
 import Campanhas from './pages/Campanhas'
 import EnviosProgramados from './pages/EnviosProgramados'
@@ -34,6 +35,7 @@ function AppRoutes() {
       <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
         <Route index element={<Dashboard />} />
         <Route path="contatos" element={<Contatos />} />
+        <Route path="acompanhamento" element={<Acompanhamento />} />
         <Route path="templates" element={<Templates />} />
         <Route path="campanhas" element={<Campanhas />} />
         <Route path="envios-programados" element={<EnviosProgramados />} />
