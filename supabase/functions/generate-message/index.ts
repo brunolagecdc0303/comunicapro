@@ -4,20 +4,11 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { extractBearerToken, callerBelongsToTeam } from '../_shared/auth.ts'
-
-// Restrinja ao domínio real do app: supabase functions secrets set ALLOWED_ORIGIN=https://seuapp.netlify.app
-// Sem essa secret configurada, cai em '*' (mesmo comportamento de antes) — configure em produção.
-const ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*'
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
+import { corsHeaders, handlePreflight } from '../_shared/cors.ts'
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
+  const preflight = handlePreflight(req)
+  if (preflight) return preflight
 
   try {
     const { prompt, pdfId, teamId } = await req.json()
@@ -28,7 +19,7 @@ Deno.serve(async (req) => {
     if (!authorized) {
       return new Response(JSON.stringify({ error: 'Não autorizado' }), {
         status: 401,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
       })
     }
 
@@ -47,7 +38,7 @@ Deno.serve(async (req) => {
     if (!team?.claude_api_key) {
       return new Response(
         JSON.stringify({ error: 'Claude API key não configurada. Vá em Configurações.' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        { status: 400, headers: { ...corsHeaders(req), 'Content-Type': 'application/json' } },
       )
     }
 
@@ -81,9 +72,7 @@ Deno.serve(async (req) => {
               const { data: fileBlob, error: downloadError } = await supabase.storage.from('pdfs').download(path)
               if (downloadError) throw downloadError
               const pdfBuffer = await fileBlob.arrayBuffer()
-              const pdfBase64 = btoa(
-                String.fromCharCode(...new Uint8Array(pdfBuffer))
-              )
+              const pdfBase64 = toBase64(pdfBuffer)
               userContent.push({
                 type: 'document',
                 source: {
@@ -94,8 +83,10 @@ Deno.serve(async (req) => {
               })
               hasPdfContent = true
             } catch (e) {
-              console.error('Erro ao baixar PDF:', e.message)
-              // Continua sem o PDF
+              // Sem o PDF a mensagem sai genérica — precisa aparecer no log,
+              // senão o assessor recebe um texto sem os dados do cliente e
+              // não tem como saber que o documento foi ignorado.
+              console.error(`Erro ao anexar PDF "${pdf.name}":`, e.message)
             }
           }
         }
@@ -155,12 +146,12 @@ PROIBIDO: inventar valores, percentuais, nomes de ativos, datas ou qualquer info
 
     return new Response(
       JSON.stringify({ message: message.trim() }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      { headers: { ...corsHeaders(req), 'Content-Type': 'application/json' } },
     )
   } catch (error) {
     return new Response(
       JSON.stringify({ error: error.message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      { status: 500, headers: { ...corsHeaders(req), 'Content-Type': 'application/json' } },
     )
   }
 })
@@ -171,4 +162,23 @@ function pathFromLegacyUrl(fileUrl: string | null | undefined): string | null {
   if (!fileUrl) return null
   const match = fileUrl.match(/\/pdfs\/(.+)$/)
   return match ? match[1] : null
+}
+
+/**
+ * Converte o PDF para base64 em blocos.
+ *
+ * A versão anterior fazia String.fromCharCode(...new Uint8Array(buffer)):
+ * com spread, cada byte vira um argumento de função, então qualquer PDF acima
+ * de ~128KB estourava com "Maximum call stack size exceeded". O erro caía no
+ * catch acima e a mensagem era gerada SEM o documento — silenciosamente
+ * genérica, que é o oposto do que a funcionalidade promete.
+ */
+function toBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  const CHUNK = 0x8000
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
+  }
+  return btoa(binary)
 }

@@ -4,24 +4,16 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { extractBearerToken, isServiceRoleToken, callerBelongsToTeam } from '../_shared/auth.ts'
+import { corsHeaders, handlePreflight } from '../_shared/cors.ts'
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
-// Restrinja ao domínio real do app: supabase functions secrets set ALLOWED_ORIGIN=https://seuapp.netlify.app
-// Sem essa secret configurada, cai em '*' (mesmo comportamento de antes) — configure em produção.
-const ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*'
 const MAX_ATTEMPTS = 3
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-}
-
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
+  const preflight = handlePreflight(req)
+  if (preflight) return preflight
 
   const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY)
   const callerToken = extractBearerToken(req)
@@ -35,32 +27,33 @@ Deno.serve(async (req) => {
     if (body.messages && body.teamId) {
       const authorized = await callerBelongsToTeam(callerToken, body.teamId)
       if (!authorized) {
-        return unauthorized()
+        return unauthorized(req)
       }
-      return await sendDirect(supabase, body.messages, body.teamId)
+      return await sendDirect(req, supabase, body.messages, body.teamId)
     }
 
     // Modo 2: Processar fila (chamado só pelo cron, com a Service Role Key)
     if (!isServiceRoleToken(callerToken)) {
-      return unauthorized()
+      return unauthorized(req)
     }
-    return await processQueue(supabase)
+    return await processQueue(req, supabase)
   } catch (error) {
     return new Response(JSON.stringify({ error: error.message }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 })
 
-function unauthorized() {
+function unauthorized(req: Request) {
   return new Response(JSON.stringify({ error: 'Não autorizado' }), {
     status: 401,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
   })
 }
 
 async function sendDirect(
+  req: Request,
   supabase: any,
   messages: { phone: string; content: string; mediaUrl?: string; documentUrl?: string; fileName?: string }[],
   teamId: string,
@@ -75,7 +68,7 @@ async function sendDirect(
   if (!team?.wasender_api_key) {
     return new Response(JSON.stringify({ error: 'Wasender API key não configurada' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 
@@ -114,11 +107,11 @@ async function sendDirect(
   }
 
   return new Response(JSON.stringify({ sent: results.length, results }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
   })
 }
 
-async function processQueue(supabase: any) {
+async function processQueue(req: Request, supabase: any) {
   // Antes de processar, devolve à fila mensagens que ficaram presas em "sending"
   // (ex.: uma execução anterior foi interrompida no meio do envio).
   const { data: recovered } = await supabase.rpc('recover_stuck_messages', { p_minutes: 10 })
@@ -131,13 +124,13 @@ async function processQueue(supabase: any) {
   if (claimError) {
     return new Response(JSON.stringify({ error: claimError.message, recovered: recovered || 0 }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 
   if (!claimed || claimed.length === 0) {
     return new Response(JSON.stringify({ processed: 0, recovered: recovered || 0 }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
     })
   }
 
@@ -224,7 +217,7 @@ async function processQueue(supabase: any) {
   }
 
   return new Response(JSON.stringify({ processed, recovered: recovered || 0, campaignsCompleted }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders(req), 'Content-Type': 'application/json' },
   })
 }
 
