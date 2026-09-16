@@ -85,3 +85,33 @@ export function contatosSemPdf(pdfs, contacts) {
   return (contacts || []).filter(c =>
     c.client_code && !comPdf.has(c.id) && !codigos.has(c.client_code))
 }
+
+/**
+ * Telefones usados por mais de um contato — a mesma pessoa com várias contas.
+ *
+ * Interessa por dois motivos opostos. É o caso legítimo que a migration 013
+ * passou a permitir; e é também o risco: dois contatos no mesmo número, fora
+ * de um grupo, recebem DUAS mensagens. O grupo resolve os dois — uma mensagem
+ * com os PDFs de todas as contas.
+ */
+export function telefonesCompartilhados(contacts, groups = []) {
+  const porTelefone = new Map()
+  for (const c of contacts || []) {
+    if (!c.phone) continue
+    if (!porTelefone.has(c.phone)) porTelefone.set(c.phone, [])
+    porTelefone.get(c.phone).push(c)
+  }
+
+  const emGrupo = new Set((groups || []).flatMap(g => g.memberIds || []))
+
+  return [...porTelefone.entries()]
+    .filter(([, lista]) => lista.length > 1)
+    .map(([phone, lista]) => ({
+      phone,
+      contatos: lista,
+      // Coberto = todos os contatos daquele número já estão no mesmo grupo.
+      jaAgrupado: lista.every(c => emGrupo.has(c.id)) &&
+        (groups || []).some(g => lista.every(c => (g.memberIds || []).includes(c.id))),
+    }))
+    .sort((a, b) => b.contatos.length - a.contatos.length)
+}

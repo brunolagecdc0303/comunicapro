@@ -5,6 +5,10 @@ import { Upload, Search, Trash2, UserPlus, Download, Check, ShieldAlert } from '
 import Papa from 'papaparse'
 import { auditCSV, isValidCPF, redactCPFs } from '../lib/privacy'
 import ContatoModal from '../components/ContatoModal'
+import GrupoModal from '../components/GrupoModal'
+import { telefonesCompartilhados } from '../lib/conferencia'
+import { getClientGroups } from '../lib/api'
+import { Users } from 'lucide-react'
 import { formatarTelefone } from '../lib/format'
 import toast from 'react-hot-toast'
 
@@ -20,6 +24,8 @@ export default function Contatos() {
   const [csvPreview, setCsvPreview] = useState(null)
   const [csvAudit, setCsvAudit] = useState(null)
   const [editando, setEditando] = useState(null)   // null | {} | contato
+  const [groups, setGroups] = useState([])
+  const [grupoModal, setGrupoModal] = useState(null)
   const fileRef = useRef()
 
   useEffect(() => {
@@ -44,8 +50,12 @@ export default function Contatos() {
   async function loadContacts() {
     setLoading(true)
     try {
-      const data = await getContacts(team.id)
+      const [data, gs] = await Promise.all([
+        getContacts(team.id),
+        getClientGroups(team.id).catch(() => []),
+      ])
       setContacts(data)
+      setGroups(gs)
     } catch (err) {
       toast.error('Erro ao carregar contatos')
     } finally {
@@ -168,6 +178,48 @@ export default function Contatos() {
         </div>
       </div>
 
+      {(() => {
+        const compartilhados = telefonesCompartilhados(contacts, groups).filter(t => !t.jaAgrupado)
+        if (compartilhados.length === 0) return null
+        return (
+          <div className="mb-4 p-4 bg-navy-50/70 border border-navy-100 rounded-xl">
+            <div className="flex gap-2">
+              <Users size={16} className="text-navy-500 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-navy-500">
+                  {compartilhados.length} telefone(s) com mais de uma conta
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Sem um grupo, cada conta vira uma mensagem separada e a pessoa recebe repetido.
+                  Agrupando, ela recebe uma mensagem só com todos os relatórios.
+                </p>
+                <ul className="mt-3 space-y-2">
+                  {compartilhados.map(t => (
+                    <li key={t.phone} className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs text-gray-500">{formatarTelefone(t.phone)}</span>
+                      <span className="text-xs text-gray-700">
+                        {t.contatos.map(c => c.name).join(' · ')}
+                      </span>
+                      <button
+                        onClick={() => setGrupoModal({
+                          sugestao: {
+                            name: t.contatos[0].name.split(' ')[0],
+                            memberIds: t.contatos.map(c => c.id),
+                            primary_contact_id: t.contatos[0].id,
+                          },
+                        })}
+                        className="btn-secondary text-xs py-1 gap-1.5">
+                        <Users size={12} /> Criar grupo
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
       {/* Barra de busca e ações */}
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <div className="relative flex-1">
@@ -260,6 +312,15 @@ export default function Contatos() {
           {filtered.length} contato(s)
         </div>
       </div>
+
+      {grupoModal && (
+        <GrupoModal
+          grupo={grupoModal.sugestao}
+          contacts={contacts}
+          onClose={() => setGrupoModal(null)}
+          onSaved={loadContacts}
+        />
+      )}
 
       {editando && (
         <ContatoModal

@@ -95,8 +95,22 @@ export function montarDestinatarios(contacts, groups, pdfs) {
  * Avisos por destinatário — o que faz o assessor parar antes de enviar.
  * Cada aviso é algo que pode resultar em mensagem errada para a pessoa errada.
  */
-export function avisosDoDestinatario(d) {
+export function avisosDoDestinatario(d, todos = []) {
   const avisos = []
+
+  // Desde que o mesmo telefone pode ter várias contas, dois destinatários
+  // distintos podem apontar para o mesmo número. Enviar assim manda duas
+  // mensagens para a mesma pessoa — o grupo é o que resolve.
+  if (d.telefone) {
+    const outros = (todos || []).filter(x => x.id !== d.id && x.telefone === d.telefone)
+    if (outros.length > 0) {
+      avisos.push({
+        nivel: 'erro',
+        texto: `Este telefone também é de ${outros.map(o => o.nome).join(', ')}. ` +
+               `Enviar assim manda mensagens repetidas para a mesma pessoa — junte num grupo.`,
+      })
+    }
+  }
 
   if (d.semTelefone) {
     avisos.push({ nivel: 'erro', texto: 'Sem telefone cadastrado — não é possível enviar.' })
@@ -130,6 +144,6 @@ export function avisosDoDestinatario(d) {
   return avisos
 }
 
-export function temErroBloqueante(d) {
-  return avisosDoDestinatario(d).some(a => a.nivel === 'erro')
+export function temErroBloqueante(d, todos = []) {
+  return avisosDoDestinatario(d, todos).some(a => a.nivel === 'erro')
 }

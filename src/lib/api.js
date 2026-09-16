@@ -30,16 +30,17 @@ export async function importContactsCSV(teamId, contacts, userId) {
     created_by: userId,
   }))
 
-  // Deduplicar por telefone (mantém o último registro de cada número)
+  // Deduplicar por telefone + código: a mesma pessoa pode ter várias contas,
+  // então o telefone sozinho não identifica mais um contato (migration 013).
   const uniqueMap = new Map()
   for (const row of allRows) {
-    if (row.phone) uniqueMap.set(row.phone, row)
+    if (row.phone) uniqueMap.set(`${row.phone}|${row.client_code || ''}`, row)
   }
   const rows = [...uniqueMap.values()]
 
   const { data, error } = await supabase
     .from('contacts')
-    .upsert(rows, { onConflict: 'team_id,phone', ignoreDuplicates: false })
+    .upsert(rows, { onConflict: 'team_id,phone,client_code', ignoreDuplicates: false })
     .select()
   if (error) throw error
   return data
@@ -782,10 +783,13 @@ export async function saveContact(teamId, contato, userId) {
     if (error) throw error
     return data
   } catch (err) {
-    // 23505 = unique(team_id, phone). Sem tratar, o usuário veria o erro cru
-    // do Postgres e não saberia que já existe um contato com esse número.
+    // 23505 = unique(team_id, phone, client_code). Telefone repetido é
+    // permitido (várias contas da mesma pessoa); o que colide é telefone E
+    // código iguais, ou dois contatos sem código no mesmo número.
     if (err.code === '23505' || /duplicate key/i.test(err.message || '')) {
-      throw new Error('Já existe um contato com esse telefone neste time.')
+      throw new Error(codigo
+        ? `Já existe um contato com esse telefone e o código ${codigo}.`
+        : 'Já existe um contato sem código nesse telefone. Informe o código da conta para diferenciar.')
     }
     throw err
   }

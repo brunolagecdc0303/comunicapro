@@ -92,7 +92,7 @@ export default function NovaMensagem() {
     () => destinatarios.filter(d => selecionados.has(d.id)),
     [destinatarios, selecionados])
 
-  const comErro = escolhidos.filter(temErroBloqueante)
+  const comErro = escolhidos.filter(d => temErroBloqueante(d, escolhidos))
   const totalPdfs = escolhidos.reduce((s, d) => s + d.pdfs.length, 0)
 
   // ==========================================
@@ -237,7 +237,7 @@ export default function NovaMensagem() {
 
     const bloqueados = prontos.filter(i => {
       const d = destinatarios.find(x => x.id === i.destinatarioId)
-      return d && temErroBloqueante(d)
+      return d && temErroBloqueante(d, escolhidos)
     })
     if (bloqueados.length > 0) {
       return toast.error(`${bloqueados.length} destinatário(s) com pendência. Resolva ou remova antes de enviar.`)
@@ -447,7 +447,7 @@ export default function NovaMensagem() {
               )}
               {filtrados.map(d => {
                 const marcado = selecionados.has(d.id)
-                const avisos = avisosDoDestinatario(d)
+                const avisos = avisosDoDestinatario(d, filtrados.filter(x => selecionados.has(x.id)))
                 const bloqueado = avisos.some(a => a.nivel === 'erro')
                 return (
                   <div key={d.id} className={`px-3 py-3 ${marcado ? 'bg-accent-50/50' : 'hover:bg-gray-50'}`}>
@@ -589,7 +589,7 @@ export default function NovaMensagem() {
           {itens.map(item => {
             const d = destinatarios.find(x => x.id === item.destinatarioId)
             if (!d) return null
-            const avisos = avisosDoDestinatario(d)
+            const avisos = avisosDoDestinatario(d, escolhidos)
             const bloqueado = avisos.some(a => a.nivel === 'erro')
             const textoFinal = aplicarNome(item.message, d.titular)
 
