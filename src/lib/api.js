@@ -724,3 +724,12 @@ export function agruparPDFsPorCodigo(pdfs) {
 export function idsDuplicados(pdfs) {
   return agruparPDFsPorCodigo(pdfs).flatMap(g => g.antigos.map(p => p.id))
 }
+
+/** Vincula um PDF a um contato (ou desfaz, com contactId null). */
+export async function linkPDFToContact(pdfId, contactId) {
+  const { error } = await supabase
+    .from('pdf_library')
+    .update({ contact_id: contactId })
+    .eq('id', pdfId)
+  if (error) throw error
+}

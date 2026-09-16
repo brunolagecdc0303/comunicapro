@@ -28,8 +28,21 @@ export function montarDestinatarios(contacts, groups, pdfs) {
     if (!atual || maisRecente(pdf, atual)) pdfPorCodigo.set(pdf.client_code, pdf)
   }
 
+  // Vínculo manual (feito na tela quando o código não bate) tem precedência
+  // sobre o casamento automático por código.
+  const pdfPorContato = new Map()
+  for (const pdf of pdfs || []) {
+    if (!pdf.contact_id) continue
+    const atual = pdfPorContato.get(pdf.contact_id)
+    if (!atual || maisRecente(pdf, atual)) pdfPorContato.set(pdf.contact_id, pdf)
+  }
+
   const contatoPorId = new Map((contacts || []).map(c => [c.id, c]))
-  const pdfDoContato = (c) => (c?.client_code ? pdfPorCodigo.get(c.client_code) || null : null)
+  const pdfDoContato = (c) => {
+    if (!c) return null
+    return pdfPorContato.get(c.id)
+      || (c.client_code ? pdfPorCodigo.get(c.client_code) || null : null)
+  }
 
   const emGrupo = new Set()
   const destinatarios = []

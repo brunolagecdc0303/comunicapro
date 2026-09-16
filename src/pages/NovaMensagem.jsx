@@ -730,7 +730,7 @@ export default function NovaMensagem() {
       )}
 
       {mostrarPdfs && (
-        <PdfsModal pdfs={pdfs} onClose={() => setMostrarPdfs(false)}
+        <PdfsModal pdfs={pdfs} contacts={contacts} onClose={() => setMostrarPdfs(false)}
           onChanged={async () => setPdfs(await getPDFs(team.id))} />
       )}
 

@@ -1,7 +1,8 @@
 import { useState, useMemo } from 'react'
-import { X, Search, Trash2, FileText, Sparkles, AlertTriangle } from 'lucide-react'
+import { X, Search, Trash2, FileText, Sparkles, AlertTriangle, Link2, UserX } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { deletePDFs, agruparPDFsPorCodigo, idsDuplicados } from '../lib/api'
+import { deletePDFs, agruparPDFsPorCodigo, idsDuplicados, linkPDFToContact } from '../lib/api'
+import { pdfsSemDono, contatosSemPdf } from '../lib/conferencia'
 
 function tamanho(bytes) {
   if (!bytes) return ''
@@ -23,11 +24,15 @@ function quando(iso) {
  * mesmo cliente com três versões do relatório. O arquivo marcado "em uso" é o
  * que será anexado (sempre o mais recente); os outros são versões passadas.
  */
-export default function PdfsModal({ pdfs, onClose, onChanged }) {
+export default function PdfsModal({ pdfs, contacts = [], onClose, onChanged }) {
   const [selecionados, setSelecionados] = useState(new Set())
   const [busca, setBusca] = useState('')
   const [apagando, setApagando] = useState(false)
+  const [aba, setAba] = useState('conferir')
+  const [vinculando, setVinculando] = useState(null)
 
+  const semDono = useMemo(() => pdfsSemDono(pdfs, contacts), [pdfs, contacts])
+  const semPdf = useMemo(() => contatosSemPdf(pdfs, contacts), [pdfs, contacts])
   const grupos = useMemo(() => agruparPDFsPorCodigo(pdfs), [pdfs])
   const duplicados = useMemo(() => idsDuplicados(pdfs), [pdfs])
 
@@ -50,6 +55,19 @@ export default function PdfsModal({ pdfs, onClose, onChanged }) {
       n.has(id) ? n.delete(id) : n.add(id)
       return n
     })
+  }
+
+  async function vincular(pdfId, contato) {
+    setVinculando(pdfId)
+    try {
+      await linkPDFToContact(pdfId, contato.id)
+      toast.success(`Associado a ${contato.name}`)
+      await onChanged?.()
+    } catch (err) {
+      toast.error('Erro ao associar: ' + (err.message || ''))
+    } finally {
+      setVinculando(null)
+    }
   }
 
   async function apagar(ids, rotulo) {
@@ -84,7 +102,7 @@ export default function PdfsModal({ pdfs, onClose, onChanged }) {
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20} /></button>
         </header>
 
-        {duplicados.length > 0 && (
+        {aba === 'arquivos' && duplicados.length > 0 && (
           <div className="mx-6 mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg
                           flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex gap-2 text-xs text-amber-800">
@@ -101,14 +119,125 @@ export default function PdfsModal({ pdfs, onClose, onChanged }) {
           </div>
         )}
 
-        <div className="px-6 pt-4">
-          <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input value={busca} onChange={e => setBusca(e.target.value)}
-              placeholder="Buscar por código ou nome do arquivo..." className="input pl-9" />
-          </div>
+        <div className="px-6 pt-4 flex gap-1 border-b border-gray-100">
+          {[['conferir', `Conferir${semDono.length ? ` (${semDono.length})` : ''}`],
+            ['arquivos', `Arquivos (${pdfs.length})`]].map(([k, l]) => (
+            <button key={k} onClick={() => setAba(k)}
+              className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+                aba === k ? 'border-accent-500 text-navy-500'
+                          : 'border-transparent text-gray-400 hover:text-gray-600'}`}>
+              {l}
+            </button>
+          ))}
         </div>
 
+        {aba === 'arquivos' && (
+          <div className="px-6 pt-4">
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input value={busca} onChange={e => setBusca(e.target.value)}
+                placeholder="Buscar por código ou nome do arquivo..." className="input pl-9" />
+            </div>
+          </div>
+        )}
+
+        {aba === 'conferir' && (
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            {semDono.length === 0 && semPdf.length === 0 && (
+              <p className="text-sm text-gray-400 text-center py-8">
+                Tudo certo: todo PDF tem cliente e todo cliente com código tem PDF.
+              </p>
+            )}
+
+            {semDono.length > 0 && (
+              <div>
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                  PDFs que não estão indo para ninguém ({semDono.length})
+                </h4>
+                <p className="text-xs text-gray-400 mb-3">
+                  O código no nome do arquivo não bate com nenhum cliente cadastrado.
+                </p>
+                <ul className="space-y-2">
+                  {semDono.map(({ pdf, nomeNoArquivo, sugestao, candidatos, digitosDiferentes: dif }) => (
+                    <li key={pdf.id} className="border border-amber-200 bg-amber-50/50 rounded-lg p-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm text-gray-800 truncate">{pdf.name}</p>
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            código no arquivo: <span className="font-mono">{pdf.client_code}</span>
+                            {nomeNoArquivo && <span> · nome: {nomeNoArquivo}</span>}
+                          </p>
+                        </div>
+                        <button onClick={() => apagar([pdf.id])} disabled={apagando}
+                          className="text-gray-300 hover:text-red-500 shrink-0" title="Excluir">
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+
+                      {sugestao ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className="text-xs text-gray-600">
+                            Parece ser <strong>{sugestao.name}</strong>
+                            <span className="font-mono text-gray-400"> ({sugestao.client_code})</span>
+                            {dif === 1 && <span className="text-amber-700"> · 1 dígito de diferença, provável erro de cadastro</span>}
+                            {dif !== null && dif > 1 && <span className="text-gray-400"> · {dif} dígitos diferentes, pode ser outra conta</span>}
+                          </span>
+                          <button onClick={() => vincular(pdf.id, sugestao)} disabled={vinculando === pdf.id}
+                            className="btn-secondary text-xs gap-1.5 py-1">
+                            <Link2 size={13} /> {vinculando === pdf.id ? 'Associando...' : 'Associar'}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className="text-xs text-gray-500">
+                            {candidatos.length > 1
+                              ? `${candidatos.length} clientes com esse nome — escolha:`
+                              : 'Nenhum cliente com esse nome. Associe manualmente:'}
+                          </span>
+                          <select defaultValue=""
+                            onChange={e => {
+                              const c = contacts.find(x => x.id === e.target.value)
+                              if (c) vincular(pdf.id, c)
+                            }}
+                            className="text-xs border border-gray-200 rounded-lg px-2 py-1 outline-none
+                                       focus:ring-2 focus:ring-accent-500 max-w-[16rem]">
+                            <option value="" disabled>Escolher cliente...</option>
+                            {(candidatos.length > 1 ? candidatos : contacts).map(c => (
+                              <option key={c.id} value={c.id}>
+                                {c.name}{c.client_code ? ` (${c.client_code})` : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {semPdf.length > 0 && (
+              <div className="pt-2">
+                <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                  Clientes sem PDF ({semPdf.length})
+                </h4>
+                <ul className="flex flex-wrap gap-2">
+                  {semPdf.map(c => (
+                    <li key={c.id}
+                      className="flex items-center gap-1.5 text-xs bg-gray-50 border border-gray-100
+                                 text-gray-600 px-2.5 py-1.5 rounded-lg">
+                      <UserX size={12} className="text-gray-400" />
+                      {c.name}
+                      <span className="font-mono text-gray-400">{c.client_code}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        {aba === 'arquivos' && (
         <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
           {filtrados.length === 0 && (
             <p className="text-sm text-gray-400 text-center py-8">Nenhum PDF encontrado.</p>
@@ -149,6 +278,7 @@ export default function PdfsModal({ pdfs, onClose, onChanged }) {
             </div>
           ))}
         </div>
+        )}
 
         <footer className="px-6 py-4 border-t border-gray-100 flex items-center justify-between gap-3">
           <p className="text-xs text-gray-400">
