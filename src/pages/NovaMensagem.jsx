@@ -2,13 +2,16 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import {
   Send, Sparkles, Upload, FileText, AlertCircle, AlertTriangle, Users, Building2,
   Search, Save, FolderOpen, Plus, Check, ChevronLeft, Eye, Trash2, User,
+  CalendarClock, BookmarkPlus, History,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
 import {
   getContacts, getPDFs, uploadPDFsBulk, extractClientCode, getClientGroups,
-  gerarParaDestinatarios, enviarEmLotes, aplicarNome, tamanhoDoLote,
+  gerarParaDestinatarios, aplicarNome,
   getDrafts, saveDraft, deleteDraft, markDraftSent,
+  enfileirarMensagens, getPromptTemplates, savePromptTemplate,
+  getUltimoContato, diasDesde,
 } from '../lib/api'
 import { montarDestinatarios, avisosDoDestinatario, temErroBloqueante } from '../lib/destinatarios'
 import { formatarTelefone } from '../lib/format'
@@ -41,8 +44,11 @@ export default function NovaMensagem() {
   const [gerando, setGerando] = useState(false)
   const [genProg, setGenProg] = useState({ done: 0, total: 0 })
   const [enviando, setEnviando] = useState(false)
-  const [envioProg, setEnvioProg] = useState({ done: 0, total: 0 })
   const [salvando, setSalvando] = useState(false)
+
+  const [templates, setTemplates] = useState([])
+  const [ultimoContato, setUltimoContato] = useState(new Map())
+  const [agendarPara, setAgendarPara] = useState('')
 
   const [grupoModal, setGrupoModal] = useState(null)   // null | {} | grupo
   const [mostrarRascunhos, setMostrarRascunhos] = useState(false)
@@ -55,10 +61,13 @@ export default function NovaMensagem() {
 
   async function carregarTudo() {
     try {
-      const [c, p, g, d] = await Promise.all([
+      const [c, p, g, d, t, u] = await Promise.all([
         getContacts(team.id), getPDFs(team.id), getClientGroups(team.id), getDrafts(team.id),
+        getPromptTemplates(team.id),
+        // Histórico é conveniência: se falhar, a tela continua utilizável.
+        getUltimoContato(team.id).catch(() => new Map()),
       ])
-      setContacts(c); setPdfs(p); setGroups(g); setDrafts(d)
+      setContacts(c); setPdfs(p); setGroups(g); setDrafts(d); setTemplates(t); setUltimoContato(u)
     } catch (err) {
       toast.error('Erro ao carregar dados: ' + (err.message || ''))
     }
@@ -232,38 +241,72 @@ export default function NovaMensagem() {
       return toast.error(`${bloqueados.length} destinatário(s) com pendência. Resolva ou remova antes de enviar.`)
     }
 
+    // Agendamento: o input datetime-local vem no fuso local; toISOString
+    // converte para UTC, que é o que a fila compara.
+    let quando = null
+    if (agendarPara) {
+      const data = new Date(agendarPara)
+      if (isNaN(data.getTime())) return toast.error('Data de agendamento inválida')
+      if (data.getTime() < Date.now()) return toast.error('A data de agendamento já passou')
+      quando = data.toISOString()
+    }
+
     const lista = prontos.map(i => destinatarios.find(x => x.id === i.destinatarioId)?.nome).filter(Boolean)
     const amostra = lista.slice(0, 5).join('\n• ')
     const resto = lista.length > 5 ? `\n… e mais ${lista.length - 5}` : ''
-    if (!confirm(`Enviar ${prontos.length} mensagem(ns) para:\n\n• ${amostra}${resto}\n\nConfirma?`)) return
+    const quandoTexto = quando
+      ? `agendar para ${new Date(agendarPara).toLocaleString('pt-BR')}`
+      : 'enviar agora'
+    if (!confirm(`Vamos ${quandoTexto}:\n\n${prontos.length} mensagem(ns) para:\n• ${amostra}${resto}\n\nConfirma?`)) return
 
     const destinos = prontos.map(i => {
       const d = destinatarios.find(x => x.id === i.destinatarioId)
-      return { phone: d.telefone, name: d.titular, message: i.message, pdfs: d.pdfs }
+      return {
+        phone: d.telefone,
+        name: d.titular,
+        message: i.message,
+        pdfs: d.pdfs,
+        contactId: d.tipo === 'contato' ? d.contatoId : (d.contatos[0]?.id || null),
+      }
     })
 
-    setEnviando(true); setEnvioProg({ done: 0, total: 0 })
+    setEnviando(true)
     try {
-      const r = await enviarEmLotes(team.id, destinos, delay,
-        (done, total) => setEnvioProg({ done, total }))
+      const r = await enfileirarMensagens(team.id, destinos, {
+        nome: rascunhoNome.trim() || undefined,
+        scheduledAt: quando,
+        delaySeconds: delay,
+      })
 
-      if (r.falhas === 0) {
-        toast.success(`${r.enviadas} mensagem(ns) enviada(s)`)
-      } else {
-        toast.error(`${r.enviadas} enviada(s), ${r.falhas} falharam. ${r.erros[0] || ''}`)
-      }
+      toast.success(quando
+        ? `${r.mensagens} mensagem(ns) agendadas`
+        : `${r.mensagens} mensagem(ns) na fila — saindo agora`)
 
-      if (r.enviadas > 0) {
-        if (rascunhoId) await markDraftSent(rascunhoId)
-        setItens([]); setSelecionados(new Set()); setPrompt('')
-        setRascunhoId(null); setRascunhoNome('')
-        setDrafts(await getDrafts(team.id))
-        setEtapa(1)
-      }
+      if (rascunhoId) await markDraftSent(rascunhoId)
+      setItens([]); setSelecionados(new Set()); setPrompt('')
+      setRascunhoId(null); setRascunhoNome(''); setAgendarPara('')
+      setDrafts(await getDrafts(team.id))
+      setEtapa(1)
     } catch (err) {
-      toast.error('Erro no envio: ' + (err.message || ''))
+      toast.error('Erro ao enfileirar: ' + (err.message || ''))
     } finally {
       setEnviando(false)
+    }
+  }
+
+  // ==========================================
+  // Templates de instrução
+  // ==========================================
+  async function salvarTemplate() {
+    if (!prompt.trim()) return toast.error('Escreva a instrução primeiro')
+    const nome = window.prompt('Nome do template:')
+    if (!nome?.trim()) return
+    try {
+      await savePromptTemplate(team.id, nome.trim(), prompt.trim(), user.id)
+      setTemplates(await getPromptTemplates(team.id))
+      toast.success('Template salvo')
+    } catch (err) {
+      toast.error('Erro ao salvar template: ' + (err.message || ''))
     }
   }
 
@@ -468,9 +511,26 @@ export default function NovaMensagem() {
             </p>
           </div>
 
+          {templates.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs text-gray-400">Usar template:</span>
+              {templates.map(t => (
+                <button key={t.id} onClick={() => setPrompt(t.content)}
+                  className="text-xs px-2.5 py-1 rounded-lg border border-gray-200 text-navy-500 hover:bg-gray-50">
+                  {t.name}
+                </button>
+              ))}
+            </div>
+          )}
+
           <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
             placeholder={'Ex.: Gere uma mensagem curta informando a rentabilidade do mês e do ano, com base no PDF do cliente. Tom direto, sem jargão.'}
             className="input min-h-[10rem] leading-relaxed" />
+
+          <button onClick={salvarTemplate} disabled={!prompt.trim()}
+            className="text-xs text-accent-600 hover:underline flex items-center gap-1 disabled:opacity-40">
+            <BookmarkPlus size={13} /> Salvar esta instrução como template
+          </button>
 
           {escolhidos.some(d => d.tipo === 'grupo') && (
             <div className="flex gap-2 p-3 bg-navy-50/60 rounded-lg text-xs text-navy-500">
@@ -572,6 +632,23 @@ export default function NovaMensagem() {
                       <AlertTriangle size={12} className="shrink-0 mt-0.5" /> {a.texto}
                     </p>
                   ))}
+
+                  {(() => {
+                    // Evita dois disparos seguidos para o mesmo cliente sem perceber.
+                    const hist = ultimoContato.get(d.telefone)
+                    const dias = diasDesde(hist?.ultima)
+                    if (dias === null) return null
+                    const recente = dias <= 7
+                    return (
+                      <p className={`text-xs mt-2 flex items-start gap-1 ${
+                        recente ? 'text-amber-600' : 'text-gray-400'}`}
+                        title={hist.conteudo}>
+                        <History size={12} className="shrink-0 mt-0.5" />
+                        Última mensagem {dias === 0 ? 'hoje' : `há ${dias} dia(s)`}
+                        {recente && ' — pode ser cedo para outro disparo'}
+                      </p>
+                    )
+                  })()}
                 </div>
 
                 {/* Editor grande */}
@@ -613,19 +690,32 @@ export default function NovaMensagem() {
                 {totalPdfs > 0 && <span className="text-gray-400 font-normal"> · {totalPdfs} anexo(s)</span>}
               </p>
               <p className="text-xs text-gray-400">
-                Enviadas em lotes de {tamanhoDoLote(delay)}, {delay}s entre cada mensagem
+                {agendarPara
+                  ? `Agendado para ${new Date(agendarPara).toLocaleString('pt-BR')}`
+                  : `Entram na fila e saem com ${delay}s entre cada uma — pode fechar a aba`}
                 {comErro.length > 0 && <span className="text-red-600"> · {comErro.length} com pendência</span>}
               </p>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="flex items-center gap-1.5 text-xs text-gray-500">
+                <CalendarClock size={14} className="text-gray-400" />
+                <input type="datetime-local" value={agendarPara}
+                  onChange={e => setAgendarPara(e.target.value)}
+                  className="border border-gray-200 rounded-lg px-2 py-1.5 text-xs outline-none
+                             focus:ring-2 focus:ring-accent-500" />
+                {agendarPara && (
+                  <button onClick={() => setAgendarPara('')}
+                    className="text-gray-400 hover:text-gray-600" title="Enviar agora">✕</button>
+                )}
+              </label>
               <button onClick={() => setEtapa(2)} className="btn-secondary gap-1.5">
                 <ChevronLeft size={16} /> Voltar
               </button>
               <button onClick={enviar} disabled={enviando || prontosCount === 0 || comErro.length > 0}
                 className="btn-primary gap-1.5">
                 {enviando
-                  ? <><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Enviando {envioProg.done}/{envioProg.total}...</>
-                  : <><Send size={16} /> Enviar</>}
+                  ? <><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Enfileirando...</>
+                  : agendarPara ? <><CalendarClock size={16} /> Agendar</> : <><Send size={16} /> Enviar</>}
               </button>
             </div>
           </div>

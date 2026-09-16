@@ -507,90 +507,9 @@ export async function markDraftSent(draftId) {
   if (error) throw error
 }
 
-// ============================================
-// ENVIO EM LOTES
-// ============================================
-// A Edge Function dorme `delay` segundos entre mensagens, e o worker do
-// Supabase é morto aos 150s (plano free). Mandar 38 destinatários de uma vez
-// com delay de 5s daria ~190s: o envio morria no meio, sem dizer quais saíram.
-// Por isso o envio é fatiado em lotes que cabem com folga na janela.
-const JANELA_SEGURA_S = 110
-
-export function tamanhoDoLote(delaySeconds = 5) {
-  // +1s por mensagem como estimativa da chamada à Wasender.
-  const porMensagem = Math.max(1, delaySeconds) + 1
-  return Math.max(3, Math.floor(JANELA_SEGURA_S / porMensagem))
-}
-
 /** Substitui {{nome}} em TODAS as ocorrências (replace simples troca só a primeira). */
 export function aplicarNome(texto, nome) {
   return String(texto ?? '').split('{{nome}}').join(nome ?? '')
-}
-
-/**
- * Monta as mensagens de um destinatário.
- * Sem PDF: uma mensagem de texto.
- * Com PDFs (caso dos grupos): o texto vai junto do primeiro documento e cada
- * documento seguinte vai numa mensagem curta identificando a conta — é assim
- * que chega legível no WhatsApp.
- */
-export async function montarMensagens(destinatario) {
-  const texto = aplicarNome(destinatario.message, destinatario.name)
-  const pdfs = destinatario.pdfs || []
-
-  if (pdfs.length === 0) {
-    return [{ phone: destinatario.phone, content: texto }]
-  }
-
-  const mensagens = []
-  for (let i = 0; i < pdfs.length; i++) {
-    const pdf = pdfs[i]
-    // URL assinada gerada na hora do lote: o bucket é privado e o link é curto.
-    const documentUrl = pdf.storage_path ? await getPDFSignedUrl(pdf.storage_path) : null
-    mensagens.push({
-      phone: destinatario.phone,
-      content: i === 0 ? texto : `Conta ${pdf.client_code || pdf.name}`,
-      documentUrl,
-      fileName: pdf.name || null,
-    })
-  }
-  return mensagens
-}
-
-/**
- * Envia em lotes. onProgress(enviadas, total, rotuloDoLote) a cada lote.
- * Devolve { enviadas, falhas, erros[] } — parcial se algum lote falhar, para
- * o usuário saber exatamente onde parou em vez de "deu erro".
- */
-export async function enviarEmLotes(teamId, destinatarios, delaySeconds, onProgress) {
-  const todas = []
-  for (const d of destinatarios) {
-    todas.push(...await montarMensagens(d))
-  }
-
-  const lote = tamanhoDoLote(delaySeconds)
-  let enviadas = 0
-  let falhas = 0
-  const erros = []
-
-  for (let i = 0; i < todas.length; i += lote) {
-    const fatia = todas.slice(i, i + lote)
-    try {
-      const { data, error } = await supabase.functions.invoke('send-messages', {
-        body: { messages: fatia, teamId },
-      })
-      if (error) throw error
-      const ok = data?.results?.filter(r => r.status === 'sent').length ?? fatia.length
-      enviadas += ok
-      falhas += fatia.length - ok
-    } catch (err) {
-      falhas += fatia.length
-      erros.push(`Lote ${Math.floor(i / lote) + 1}: ${err.message || err}`)
-    }
-    onProgress?.(enviadas + falhas, todas.length)
-  }
-
-  return { enviadas, falhas, erros, total: todas.length }
 }
 
 // ============================================
@@ -635,4 +554,123 @@ export async function gerarParaDestinatarios(prompt, destinatarios, teamId, onPr
   }
 
   return resultados
+}
+
+// ============================================
+// ENFILEIRAR (substitui o envio direto)
+// ============================================
+/**
+ * Coloca as mensagens na message_queue e deixa o cron enviar.
+ *
+ * Por que não enviar direto da tela: o envio direto segura o navegador aberto
+ * durante todo o disparo (minutos), morre se a aba fechar e não tem retry.
+ * A fila já existe, roda de minuto em minuto, repete falha até 3x, registra
+ * log e aparece em Envios Programados. `scheduledAt` nulo = enviar agora.
+ *
+ * O caminho do PDF vai como document_path: quem assina a URL é a Edge Function,
+ * no instante do envio (ver migration 011).
+ */
+/**
+ * Transforma destinatários nas linhas da message_queue. Pura de propósito:
+ * é a parte que decide o que cada cliente recebe, e precisa ser testável.
+ *
+ * Sem PDF: uma linha de texto.
+ * Com PDFs: o texto acompanha o primeiro documento e cada documento seguinte
+ * vai numa linha curta identificando a conta.
+ */
+export function montarLinhasDaFila(destinatarios) {
+  const linhas = []
+  for (const d of destinatarios || []) {
+    const texto = aplicarNome(d.message, d.name)
+    const pdfs = d.pdfs || []
+
+    if (pdfs.length === 0) {
+      linhas.push({ phone: d.phone, content: texto, contact_id: d.contactId || null })
+      continue
+    }
+    pdfs.forEach((pdf, i) => {
+      linhas.push({
+        phone: d.phone,
+        content: i === 0 ? texto : `Conta ${pdf.client_code || pdf.name}`,
+        contact_id: d.contactId || null,
+        document_path: pdf.storage_path || null,
+        document_name: pdf.name || null,
+      })
+    })
+  }
+  return linhas
+}
+
+export async function enfileirarMensagens(teamId, destinatarios, { nome, scheduledAt, delaySeconds } = {}) {
+  const linhas = montarLinhasDaFila(destinatarios)
+  if (linhas.length === 0) throw new Error('Nada para enfileirar')
+
+  const { data: campanha, error: erroCampanha } = await supabase
+    .from('campaigns')
+    .insert({
+      team_id: teamId,
+      name: nome || `Envio de ${new Date().toLocaleDateString('pt-BR')}`,
+      status: scheduledAt ? 'scheduled' : 'running',
+      scheduled_at: scheduledAt || null,
+      started_at: scheduledAt ? null : new Date().toISOString(),
+      total_recipients: destinatarios.length,
+      delay_seconds: delaySeconds ?? 5,
+    })
+    .select().single()
+  if (erroCampanha) throw erroCampanha
+
+  const quando = scheduledAt || new Date().toISOString()
+  const { error } = await supabase.from('message_queue').insert(
+    linhas.map(l => ({ ...l, campaign_id: campanha.id, status: 'pending', scheduled_at: quando }))
+  )
+  if (error) throw error
+
+  return { campanhaId: campanha.id, mensagens: linhas.length }
+}
+
+// ============================================
+// TEMPLATES DE INSTRUÇÃO
+// ============================================
+export async function getPromptTemplates(teamId) {
+  const { data, error } = await supabase
+    .from('message_templates')
+    .select('id, name, content')
+    .eq('team_id', teamId)
+    .eq('kind', 'instrucao')
+    .order('name')
+  if (error) throw error
+  return data || []
+}
+
+export async function savePromptTemplate(teamId, name, content, userId) {
+  const { data, error } = await supabase
+    .from('message_templates')
+    .insert({ team_id: teamId, name, content, kind: 'instrucao', created_by: userId })
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+export async function deletePromptTemplate(id) {
+  const { error } = await supabase.from('message_templates').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ============================================
+// ÚLTIMO CONTATO POR CLIENTE
+// ============================================
+/** Mapa telefone -> { ultima, conteudo }, para avisar sobre disparos repetidos. */
+export async function getUltimoContato(teamId) {
+  const { data, error } = await supabase.rpc('ultimo_contato_por_telefone', { p_team_id: teamId })
+  if (error) throw error
+  const mapa = new Map()
+  for (const r of data || []) mapa.set(r.phone, { ultima: r.ultima, conteudo: r.conteudo })
+  return mapa
+}
+
+/** Dias desde o último contato, ou null se nunca houve. */
+export function diasDesde(iso) {
+  if (!iso) return null
+  const ms = Date.now() - new Date(iso).getTime()
+  return Math.floor(ms / 86400000)
 }

@@ -169,7 +169,21 @@ async function processQueue(req: Request, supabase: any) {
     }
 
     try {
-      const result = await sendViaWasender(team.wasender_api_key, msg.phone, msg.content, msg.media_url)
+      // O anexo é assinado AGORA, não no enfileiramento: o bucket é privado e
+      // a URL vale poucos minutos. Um lote grande demora mais que isso para
+      // ser drenado, então assinar antes entregaria link vencido ao WhatsApp.
+      let documentUrl: string | null = null
+      if (msg.document_path) {
+        const { data: signed, error: signError } = await supabase.storage
+          .from('pdfs').createSignedUrl(msg.document_path, 900)
+        if (signError) throw new Error(`Falha ao assinar anexo: ${signError.message}`)
+        documentUrl = signed.signedUrl
+      }
+
+      const result = await sendViaWasender(
+        team.wasender_api_key, msg.phone, msg.content, msg.media_url,
+        documentUrl, msg.document_name,
+      )
       await supabase.from('message_queue').update({
         status: 'sent',
         sent_at: new Date().toISOString(),
