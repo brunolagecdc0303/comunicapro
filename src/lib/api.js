@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import { extractClientCode } from './clientCode'
+import { isValidCPF, redactCPFs } from './privacy'
 
 // Reexportado para não quebrar quem já importava daqui.
 export { extractClientCode }
@@ -286,7 +287,7 @@ export async function getDashboardStats(teamId) {
 // ============================================
 // UTILS
 // ============================================
-function normalizePhone(phone) {
+export function normalizePhone(phone) {
   if (!phone) return ''
   let clean = phone.replace(/\D/g, '')
   if (clean.length === 11) clean = '55' + clean
@@ -732,4 +733,60 @@ export async function linkPDFToContact(pdfId, contactId) {
     .update({ contact_id: contactId })
     .eq('id', pdfId)
   if (error) throw error
+}
+
+// ============================================
+// CRIAR / EDITAR CONTATO
+// ============================================
+/**
+ * Salva um contato. Sem id, cria; com id, atualiza.
+ *
+ * O telefone é normalizado igual ao do import (DDI 55 quando falta), senão o
+ * mesmo cliente entraria duas vezes — uma "31999998888" e outra
+ * "5531999998888" — e as duas receberiam a mensagem.
+ *
+ * CPF nunca entra: se o código do cliente for um CPF válido ele é recusado, e
+ * nome/tags passam pela mesma remoção usada no import (ver privacy.js).
+ */
+export async function saveContact(teamId, contato, userId) {
+  const codigo = String(contato.client_code ?? '').trim()
+  if (isValidCPF(codigo)) {
+    throw new Error('Esse código é um CPF. O cliente é identificado pelo código da conta.')
+  }
+
+  const phone = normalizePhone(contato.phone)
+  if (!phone) throw new Error('Telefone é obrigatório')
+  if (!contato.name?.trim()) throw new Error('Nome é obrigatório')
+
+  const linha = {
+    name: redactCPFs(contato.name.trim()),
+    phone,
+    email: contato.email?.trim() || null,
+    client_code: codigo || null,
+    tags: Array.isArray(contato.tags)
+      ? contato.tags
+      : String(contato.tags || '').split(',').map(t => t.trim()).filter(Boolean),
+  }
+
+  try {
+    if (contato.id) {
+      const { data, error } = await supabase
+        .from('contacts').update(linha).eq('id', contato.id).select().single()
+      if (error) throw error
+      return data
+    }
+    const { data, error } = await supabase
+      .from('contacts')
+      .insert({ ...linha, team_id: teamId, created_by: userId })
+      .select().single()
+    if (error) throw error
+    return data
+  } catch (err) {
+    // 23505 = unique(team_id, phone). Sem tratar, o usuário veria o erro cru
+    // do Postgres e não saberia que já existe um contato com esse número.
+    if (err.code === '23505' || /duplicate key/i.test(err.message || '')) {
+      throw new Error('Já existe um contato com esse telefone neste time.')
+    }
+    throw err
+  }
 }

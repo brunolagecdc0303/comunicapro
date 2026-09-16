@@ -4,6 +4,8 @@ import { getContacts, importContactsCSV, deleteContacts } from '../lib/api'
 import { Upload, Search, Trash2, UserPlus, Download, Check, ShieldAlert } from 'lucide-react'
 import Papa from 'papaparse'
 import { auditCSV, isValidCPF, redactCPFs } from '../lib/privacy'
+import ContatoModal from '../components/ContatoModal'
+import { formatarTelefone } from '../lib/format'
 import toast from 'react-hot-toast'
 
 export default function Contatos() {
@@ -17,6 +19,7 @@ export default function Contatos() {
   const [showImportModal, setShowImportModal] = useState(false)
   const [csvPreview, setCsvPreview] = useState(null)
   const [csvAudit, setCsvAudit] = useState(null)
+  const [editando, setEditando] = useState(null)   // null | {} | contato
   const fileRef = useRef()
 
   useEffect(() => {
@@ -155,6 +158,9 @@ export default function Contatos() {
           <button onClick={downloadTemplate} className="btn-secondary text-xs gap-1.5">
             <Download size={14} /> Modelo CSV
           </button>
+          <button onClick={() => setEditando({})} className="btn-secondary gap-1.5">
+            <UserPlus size={16} /> Novo contato
+          </button>
           <button onClick={() => fileRef.current?.click()} className="btn-primary gap-1.5">
             <Upload size={16} /> Importar CSV
           </button>
@@ -211,6 +217,7 @@ export default function Contatos() {
                   <th className="px-4 py-3 text-left font-medium text-gray-500 hidden sm:table-cell">Código</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500 hidden md:table-cell">Email</th>
                   <th className="px-4 py-3 text-left font-medium text-gray-500 hidden lg:table-cell">Tags</th>
+                  <th className="px-4 py-3 w-16" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -225,7 +232,7 @@ export default function Contatos() {
                       />
                     </td>
                     <td className="px-4 py-3 font-medium text-gray-900">{c.name}</td>
-                    <td className="px-4 py-3 text-gray-600 font-mono text-xs">{c.phone}</td>
+                    <td className="px-4 py-3 text-gray-600 font-mono text-xs">{formatarTelefone(c.phone)}</td>
                     <td className="px-4 py-3 text-gray-600 font-mono text-xs hidden sm:table-cell">
                       {c.client_code || '—'}
                     </td>
@@ -239,6 +246,10 @@ export default function Contatos() {
                         ))}
                       </div>
                     </td>
+                    <td className="px-4 py-3 text-right">
+                      <button onClick={() => setEditando(c)}
+                        className="text-xs text-accent-600 hover:underline">editar</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -249,6 +260,14 @@ export default function Contatos() {
           {filtered.length} contato(s)
         </div>
       </div>
+
+      {editando && (
+        <ContatoModal
+          contato={editando.id ? editando : null}
+          onClose={() => setEditando(null)}
+          onSaved={loadContacts}
+        />
+      )}
 
       {/* Modal Import Preview */}
       {showImportModal && (
