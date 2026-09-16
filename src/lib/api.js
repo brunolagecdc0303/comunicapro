@@ -267,19 +267,6 @@ export async function getPDFs(teamId) {
   return data
 }
 
-// Busca PDFs que fazem match com contatos pelo client_code
-export function matchContactsPDFs(contacts, pdfs) {
-  const pdfMap = new Map()
-  for (const pdf of pdfs) {
-    if (pdf.client_code) pdfMap.set(pdf.client_code, pdf)
-  }
-  return contacts.map(contact => ({
-    contact,
-    pdf: contact.client_code ? pdfMap.get(contact.client_code) || null : null,
-    matched: contact.client_code ? pdfMap.has(contact.client_code) : false,
-  }))
-}
-
 // ============================================
 // DASHBOARD
 // ============================================
@@ -673,4 +660,67 @@ export function diasDesde(iso) {
   if (!iso) return null
   const ms = Date.now() - new Date(iso).getTime()
   return Math.floor(ms / 86400000)
+}
+
+// ============================================
+// EXCLUSÃO DE PDFs
+// ============================================
+/**
+ * Exclui PDFs: primeiro o arquivo no Storage, depois o registro.
+ *
+ * Nessa ordem de propósito. Se o registro saísse primeiro e o Storage falhasse,
+ * o arquivo ficaria órfão no bucket: ninguém mais o vê no app, mas ele continua
+ * ocupando espaço e guardando dado de cliente, sem nada que o encontre.
+ * Falhando o Storage, o registro fica e dá para tentar de novo.
+ */
+export async function deletePDFs(ids) {
+  if (!ids?.length) return { removidos: 0 }
+
+  const { data: registros, error: erroBusca } = await supabase
+    .from('pdf_library')
+    .select('id, storage_path')
+    .in('id', ids)
+  if (erroBusca) throw erroBusca
+
+  const caminhos = (registros || []).map(r => r.storage_path).filter(Boolean)
+  if (caminhos.length > 0) {
+    const { error } = await supabase.storage.from('pdfs').remove(caminhos)
+    if (error) throw new Error(`Falha ao apagar arquivo no Storage: ${error.message}`)
+  }
+
+  const { error } = await supabase.from('pdf_library').delete().in('id', ids)
+  if (error) throw error
+
+  return { removidos: ids.length }
+}
+
+/**
+ * Agrupa a biblioteca por código de cliente, do mais recente para o mais antigo.
+ * O primeiro de cada grupo é o que o app anexa; os demais são versões antigas.
+ */
+export function agruparPDFsPorCodigo(pdfs) {
+  const porCodigo = new Map()
+  for (const pdf of pdfs || []) {
+    const chave = pdf.client_code || '(sem código)'
+    if (!porCodigo.has(chave)) porCodigo.set(chave, [])
+    porCodigo.get(chave).push(pdf)
+  }
+
+  for (const lista of porCodigo.values()) {
+    lista.sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))
+  }
+
+  return [...porCodigo.entries()]
+    .map(([codigo, arquivos]) => ({
+      codigo,
+      emUso: arquivos[0],
+      antigos: arquivos.slice(1),
+      total: arquivos.length,
+    }))
+    .sort((a, b) => b.antigos.length - a.antigos.length || a.codigo.localeCompare(b.codigo))
+}
+
+/** Ids de todas as versões antigas — o que "limpar duplicados" remove. */
+export function idsDuplicados(pdfs) {
+  return agruparPDFsPorCodigo(pdfs).flatMap(g => g.antigos.map(p => p.id))
 }

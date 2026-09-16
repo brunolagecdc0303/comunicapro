@@ -7,14 +7,25 @@
 
 import { extractClientCode } from './clientCode'
 
+function maisRecente(a, b) {
+  return new Date(a?.created_at || 0).getTime() > new Date(b?.created_at || 0).getTime()
+}
+
 /**
  * @returns lista de destinatários:
  *   { id, tipo: 'grupo'|'contato', nome, telefone, contatos[], pdfs[], semTelefone }
  */
 export function montarDestinatarios(contacts, groups, pdfs) {
+  // Quando o mesmo código tem vários PDFs (reenvio de um lote corrigido, por
+  // exemplo), vale o MAIS RECENTE. A versão anterior simplesmente sobrescrevia
+  // o mapa a cada volta e, como a lista vem do mais novo para o mais antigo,
+  // quem sobrava no fim era justamente o arquivo mais velho — o cliente
+  // receberia o relatório desatualizado.
   const pdfPorCodigo = new Map()
   for (const pdf of pdfs || []) {
-    if (pdf.client_code) pdfPorCodigo.set(pdf.client_code, pdf)
+    if (!pdf.client_code) continue
+    const atual = pdfPorCodigo.get(pdf.client_code)
+    if (!atual || maisRecente(pdf, atual)) pdfPorCodigo.set(pdf.client_code, pdf)
   }
 
   const contatoPorId = new Map((contacts || []).map(c => [c.id, c]))

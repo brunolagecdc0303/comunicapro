@@ -16,6 +16,7 @@ import {
 import { montarDestinatarios, avisosDoDestinatario, temErroBloqueante } from '../lib/destinatarios'
 import { formatarTelefone } from '../lib/format'
 import GrupoModal from '../components/GrupoModal'
+import PdfsModal from '../components/PdfsModal'
 
 const ETAPAS = [
   { n: 1, titulo: 'Destinatários' },
@@ -52,6 +53,7 @@ export default function NovaMensagem() {
 
   const [grupoModal, setGrupoModal] = useState(null)   // null | {} | grupo
   const [mostrarRascunhos, setMostrarRascunhos] = useState(false)
+  const [mostrarPdfs, setMostrarPdfs] = useState(false)
   const [preview, setPreview] = useState(null)
   const pdfInputRef = useRef()
 
@@ -396,12 +398,17 @@ export default function NovaMensagem() {
                   O código é lido do nome do arquivo — ex.: "Conta 355986.pdf"
                 </p>
               </div>
+              <div className="flex gap-2 shrink-0">
+              <button onClick={() => setMostrarPdfs(true)} className="btn-secondary gap-1.5">
+                <FileText size={16} /> Gerenciar ({pdfs.length})
+              </button>
               <button onClick={() => pdfInputRef.current?.click()} disabled={uploading}
-                className="btn-secondary gap-1.5 shrink-0">
+                className="btn-secondary gap-1.5">
                 {uploading
                   ? <><div className="animate-spin w-4 h-4 border-2 border-navy-500 border-t-transparent rounded-full" /> {uploadProg.done}/{uploadProg.total}</>
                   : <><Upload size={16} /> Importar PDFs</>}
               </button>
+              </div>
               <input ref={pdfInputRef} type="file" accept=".pdf" multiple
                 onChange={handlePDFUpload} className="hidden" />
             </div>
@@ -720,6 +727,11 @@ export default function NovaMensagem() {
             </div>
           </div>
         </div>
+      )}
+
+      {mostrarPdfs && (
+        <PdfsModal pdfs={pdfs} onClose={() => setMostrarPdfs(false)}
+          onChanged={async () => setPdfs(await getPDFs(team.id))} />
       )}
 
       {grupoModal && (
