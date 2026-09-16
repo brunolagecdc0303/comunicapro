@@ -1,430 +1,671 @@
-import { useState, useEffect, useRef } from 'react'
-import { useAuth } from '../hooks/useAuth'
-import { getContacts, getPDFs, uploadPDFsBulk, matchContactsPDFs, generateBulkMessages, extractClientCode, getPDFSignedUrl } from '../lib/api'
-import { supabase } from '../lib/supabase'
-import { Send, Sparkles, Upload, FileText, CheckCircle, XCircle, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react'
+import { useState, useEffect, useRef, useMemo } from 'react'
+import {
+  Send, Sparkles, Upload, FileText, AlertCircle, AlertTriangle, Users, Building2,
+  Search, Save, FolderOpen, Plus, Check, ChevronLeft, Eye, Trash2, User,
+} from 'lucide-react'
 import toast from 'react-hot-toast'
+import { useAuth } from '../hooks/useAuth'
+import {
+  getContacts, getPDFs, uploadPDFsBulk, extractClientCode, getClientGroups,
+  gerarParaDestinatarios, enviarEmLotes, aplicarNome, tamanhoDoLote,
+  getDrafts, saveDraft, deleteDraft, markDraftSent,
+} from '../lib/api'
+import { montarDestinatarios, avisosDoDestinatario, temErroBloqueante } from '../lib/destinatarios'
+import { formatarTelefone } from '../lib/format'
+import GrupoModal from '../components/GrupoModal'
+
+const ETAPAS = [
+  { n: 1, titulo: 'Destinatários' },
+  { n: 2, titulo: 'Mensagem' },
+  { n: 3, titulo: 'Revisar e enviar' },
+]
 
 export default function NovaMensagem() {
   const { user, team } = useAuth()
+
+  const [etapa, setEtapa] = useState(1)
   const [contacts, setContacts] = useState([])
   const [pdfs, setPdfs] = useState([])
-  const [matched, setMatched] = useState([]) // { contact, pdf, matched }
-  const [selectedIds, setSelectedIds] = useState(new Set())
-  const [aiPrompt, setAiPrompt] = useState('')
-  const [generatedMessages, setGeneratedMessages] = useState([]) // { contact, pdf, message, status }
-  const [sending, setSending] = useState(false)
-  const [generating, setGenerating] = useState(false)
+  const [groups, setGroups] = useState([])
+  const [drafts, setDrafts] = useState([])
+
+  const [selecionados, setSelecionados] = useState(new Set())
+  const [busca, setBusca] = useState('')
+  const [prompt, setPrompt] = useState('')
+  const [itens, setItens] = useState([])          // { destinatarioId, message, status, error }
+  const [rascunhoId, setRascunhoId] = useState(null)
+  const [rascunhoNome, setRascunhoNome] = useState('')
+
   const [uploading, setUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState({ done: 0, total: 0 })
-  const [genProgress, setGenProgress] = useState({ done: 0, total: 0 })
-  const [sendProgress, setSendProgress] = useState({ done: 0, total: 0 })
-  const [search, setSearch] = useState('')
-  const [showGenerated, setShowGenerated] = useState(false)
+  const [uploadProg, setUploadProg] = useState({ done: 0, total: 0 })
+  const [gerando, setGerando] = useState(false)
+  const [genProg, setGenProg] = useState({ done: 0, total: 0 })
+  const [enviando, setEnviando] = useState(false)
+  const [envioProg, setEnvioProg] = useState({ done: 0, total: 0 })
+  const [salvando, setSalvando] = useState(false)
+
+  const [grupoModal, setGrupoModal] = useState(null)   // null | {} | grupo
+  const [mostrarRascunhos, setMostrarRascunhos] = useState(false)
+  const [preview, setPreview] = useState(null)
   const pdfInputRef = useRef()
 
-  useEffect(() => {
-    if (team?.id) {
-      Promise.all([getContacts(team.id), getPDFs(team.id)]).then(([c, p]) => {
-        setContacts(c)
-        setPdfs(p)
-        setMatched(matchContactsPDFs(c, p))
-      })
+  const delay = team?.settings?.delay_between_messages ?? 5
+
+  useEffect(() => { if (team?.id) carregarTudo() }, [team?.id])
+
+  async function carregarTudo() {
+    try {
+      const [c, p, g, d] = await Promise.all([
+        getContacts(team.id), getPDFs(team.id), getClientGroups(team.id), getDrafts(team.id),
+      ])
+      setContacts(c); setPdfs(p); setGroups(g); setDrafts(d)
+    } catch (err) {
+      toast.error('Erro ao carregar dados: ' + (err.message || ''))
     }
-  }, [team])
+  }
 
-  // Recalcula matches quando PDFs mudam
-  useEffect(() => {
-    if (contacts.length > 0) {
-      setMatched(matchContactsPDFs(contacts, pdfs))
-    }
-  }, [pdfs, contacts])
+  const destinatarios = useMemo(
+    () => montarDestinatarios(contacts, groups, pdfs),
+    [contacts, groups, pdfs])
 
-  const filteredMatched = matched.filter(m => {
-    if (!search.trim()) return true
-    const q = search.toLowerCase()
-    return (
-      m.contact.name?.toLowerCase().includes(q) ||
-      m.contact.phone?.includes(q) ||
-      m.contact.client_code?.includes(q)
-    )
-  })
+  const filtrados = useMemo(() => {
+    const q = busca.trim().toLowerCase()
+    if (!q) return destinatarios
+    return destinatarios.filter(d =>
+      d.nome?.toLowerCase().includes(q) ||
+      d.telefone?.includes(q) ||
+      d.contatos.some(c => c.client_code?.includes(q) || c.name?.toLowerCase().includes(q)))
+  }, [destinatarios, busca])
 
-  const selectedMatched = matched.filter(m => selectedIds.has(m.contact.id))
-  const matchedCount = matched.filter(m => m.matched).length
-  const selectedMatchedCount = selectedMatched.filter(m => m.matched).length
+  const escolhidos = useMemo(
+    () => destinatarios.filter(d => selecionados.has(d.id)),
+    [destinatarios, selecionados])
+
+  const comErro = escolhidos.filter(temErroBloqueante)
+  const totalPdfs = escolhidos.reduce((s, d) => s + d.pdfs.length, 0)
 
   // ==========================================
-  // Upload PDFs em massa
+  // PDFs
   // ==========================================
   async function handlePDFUpload(e) {
     const files = Array.from(e.target.files || [])
     if (files.length === 0) return
 
-    // Preview dos códigos que serão extraídos
-    const preview = files.map(f => ({ name: f.name, code: extractClientCode(f.name) }))
-    const withCode = preview.filter(p => p.code)
-    const withoutCode = preview.filter(p => !p.code)
-
-    if (withoutCode.length > 0) {
-      const names = withoutCode.slice(0, 3).map(p => p.name).join(', ')
-      const extra = withoutCode.length > 3 ? ` e mais ${withoutCode.length - 3}` : ''
-      toast.error(`${withoutCode.length} arquivo(s) sem código detectável: ${names}${extra}`)
+    const semCodigo = files.filter(f => !extractClientCode(f.name))
+    if (semCodigo.length > 0) {
+      const nomes = semCodigo.slice(0, 3).map(f => f.name).join(', ')
+      toast.error(`${semCodigo.length} arquivo(s) sem código no nome: ${nomes}${semCodigo.length > 3 ? '…' : ''}`)
     }
+    const validos = files.filter(f => extractClientCode(f.name))
+    if (validos.length === 0) { e.target.value = ''; return }
 
-    if (withCode.length === 0) {
-      e.target.value = ''
-      return
-    }
-
-    setUploading(true)
-    setUploadProgress({ done: 0, total: files.length })
-
+    setUploading(true); setUploadProg({ done: 0, total: validos.length })
     try {
-      const results = await uploadPDFsBulk(team.id, files, user.id, (done, total) => {
-        setUploadProgress({ done, total })
-      })
-
-      const ok = results.filter(r => r.status === 'ok').length
-      const fail = results.filter(r => r.status === 'error').length
-
-      // Recarregar PDFs
-      const newPdfs = await getPDFs(team.id)
-      setPdfs(newPdfs)
-
-      toast.success(`${ok} PDF(s) enviado(s)${fail > 0 ? `, ${fail} erro(s)` : ''}`)
+      const res = await uploadPDFsBulk(team.id, validos, user.id, (done, total) => setUploadProg({ done, total }))
+      const ok = res.filter(r => r.status === 'ok').length
+      setPdfs(await getPDFs(team.id))
+      toast.success(`${ok} PDF(s) enviado(s)`)
     } catch (err) {
       toast.error('Erro no upload: ' + err.message)
     } finally {
-      setUploading(false)
-      e.target.value = ''
+      setUploading(false); e.target.value = ''
     }
   }
 
   // ==========================================
-  // Selecionar contatos
+  // Seleção
   // ==========================================
-  function toggleContact(id) {
-    setSelectedIds(prev => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
+  function alternar(id) {
+    setSelecionados(prev => {
+      const n = new Set(prev)
+      n.has(id) ? n.delete(id) : n.add(id)
+      return n
     })
   }
-
-  function selectAllMatched() {
-    const matchedIds = filteredMatched.filter(m => m.matched).map(m => m.contact.id)
-    setSelectedIds(new Set(matchedIds))
-  }
-
-  function selectAll() {
-    setSelectedIds(new Set(filteredMatched.map(m => m.contact.id)))
-  }
-
-  function selectNone() {
-    setSelectedIds(new Set())
-  }
+  const selecionarComPdf = () => setSelecionados(new Set(filtrados.filter(d => d.pdfs.length > 0).map(d => d.id)))
+  const selecionarTodos = () => setSelecionados(new Set(filtrados.map(d => d.id)))
+  const limparSelecao = () => setSelecionados(new Set())
 
   // ==========================================
-  // Gerar mensagens com IA
+  // Geração
   // ==========================================
-  async function handleGenerate() {
-    if (!aiPrompt.trim()) {
-      toast.error('Escreva uma instrução para a IA')
-      return
-    }
-    if (selectedIds.size === 0) {
-      toast.error('Selecione ao menos um contato')
-      return
-    }
+  async function gerar() {
+    if (!prompt.trim()) return toast.error('Escreva a instrução para a IA')
+    if (escolhidos.length === 0) return toast.error('Selecione ao menos um destinatário')
 
-    const contactsToGenerate = selectedMatched.map(m => ({
-      contact: m.contact,
-      pdf: m.pdf,
-    }))
-
-    setGenerating(true)
-    setGenProgress({ done: 0, total: contactsToGenerate.length })
-    setGeneratedMessages([])
-    setShowGenerated(true)
-
+    setGerando(true); setGenProg({ done: 0, total: escolhidos.length })
     try {
-      const results = await generateBulkMessages(
-        aiPrompt,
-        contactsToGenerate,
-        team.id,
-        (done, total) => setGenProgress({ done, total })
-      )
-      setGeneratedMessages(results)
-      const ok = results.filter(r => r.status === 'generated').length
-      toast.success(`${ok} mensagem(ns) gerada(s)`)
+      const res = await gerarParaDestinatarios(prompt, escolhidos, team.id,
+        (done, total) => setGenProg({ done, total }))
+      setItens(res)
+      const ok = res.filter(r => r.status === 'gerada').length
+      const falhas = res.length - ok
+      if (ok > 0) toast.success(`${ok} mensagem(ns) gerada(s)`)
+      if (falhas > 0) toast.error(`${falhas} falhou(aram) — veja na revisão`)
+      setEtapa(3)
     } catch (err) {
-      toast.error('Erro na geração: ' + err.message)
+      toast.error('Erro na geração: ' + (err.message || ''))
     } finally {
-      setGenerating(false)
+      setGerando(false)
     }
   }
 
-  // Editar uma mensagem gerada
-  function updateGeneratedMessage(index, newMessage) {
-    setGeneratedMessages(prev => {
-      const next = [...prev]
-      next[index] = { ...next[index], message: newMessage }
-      return next
+  function editarMensagem(destinatarioId, texto) {
+    setItens(prev => prev.map(i => i.destinatarioId === destinatarioId ? { ...i, message: texto } : i))
+  }
+
+  function removerItem(destinatarioId) {
+    setItens(prev => prev.filter(i => i.destinatarioId !== destinatarioId))
+    setSelecionados(prev => {
+      const n = new Set(prev); n.delete(destinatarioId); return n
     })
   }
 
   // ==========================================
-  // Enviar tudo (mensagem + PDF anexo)
+  // Rascunhos
   // ==========================================
-  async function handleSendAll() {
-    const toSend = generatedMessages.filter(m => m.status === 'generated' && m.message)
-    if (toSend.length === 0) {
-      toast.error('Nenhuma mensagem para enviar')
-      return
+  async function salvarRascunho() {
+    const prontos = itens.filter(i => i.status === 'gerada' && i.message.trim())
+    if (prontos.length === 0) return toast.error('Nada para salvar')
+
+    const nome = rascunhoNome.trim() ||
+      `Rascunho de ${new Date().toLocaleDateString('pt-BR')} (${prontos.length} msg)`
+
+    setSalvando(true)
+    try {
+      const payload = prontos.map(i => {
+        const d = destinatarios.find(x => x.id === i.destinatarioId)
+        return {
+          destinatario_id: i.destinatarioId,
+          name: d?.nome || '',
+          phone: d?.telefone || '',
+          message: i.message,
+          pdf_ids: (d?.pdfs || []).map(p => p.id),
+        }
+      })
+      const salvo = await saveDraft(team.id, { id: rascunhoId, name: nome, prompt, items: payload }, user.id)
+      setRascunhoId(salvo.id); setRascunhoNome(salvo.name)
+      setDrafts(await getDrafts(team.id))
+      toast.success('Rascunho salvo')
+    } catch (err) {
+      toast.error('Erro ao salvar rascunho: ' + (err.message || ''))
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  function carregarRascunho(d) {
+    const ids = (d.items || []).map(i => i.destinatario_id).filter(Boolean)
+    setSelecionados(new Set(ids))
+    setItens((d.items || []).map(i => ({
+      destinatarioId: i.destinatario_id, message: i.message, status: 'gerada',
+    })))
+    setPrompt(d.prompt || '')
+    setRascunhoId(d.id); setRascunhoNome(d.name)
+    setMostrarRascunhos(false); setEtapa(3)
+    toast.success(`Rascunho "${d.name}" carregado`)
+  }
+
+  async function excluirRascunho(id, e) {
+    e.stopPropagation()
+    if (!confirm('Excluir este rascunho?')) return
+    try {
+      await deleteDraft(id)
+      setDrafts(await getDrafts(team.id))
+      if (rascunhoId === id) { setRascunhoId(null); setRascunhoNome('') }
+      toast.success('Rascunho excluído')
+    } catch { toast.error('Erro ao excluir') }
+  }
+
+  // ==========================================
+  // Envio
+  // ==========================================
+  async function enviar() {
+    const prontos = itens.filter(i => i.status === 'gerada' && i.message.trim())
+    if (prontos.length === 0) return toast.error('Nenhuma mensagem para enviar')
+
+    const bloqueados = prontos.filter(i => {
+      const d = destinatarios.find(x => x.id === i.destinatarioId)
+      return d && temErroBloqueante(d)
+    })
+    if (bloqueados.length > 0) {
+      return toast.error(`${bloqueados.length} destinatário(s) com pendência. Resolva ou remova antes de enviar.`)
     }
 
-    setSending(true)
-    setSendProgress({ done: 0, total: toSend.length })
+    const lista = prontos.map(i => destinatarios.find(x => x.id === i.destinatarioId)?.nome).filter(Boolean)
+    const amostra = lista.slice(0, 5).join('\n• ')
+    const resto = lista.length > 5 ? `\n… e mais ${lista.length - 5}` : ''
+    if (!confirm(`Enviar ${prontos.length} mensagem(ns) para:\n\n• ${amostra}${resto}\n\nConfirma?`)) return
 
+    const destinos = prontos.map(i => {
+      const d = destinatarios.find(x => x.id === i.destinatarioId)
+      return { phone: d.telefone, name: d.titular, message: i.message, pdfs: d.pdfs }
+    })
+
+    setEnviando(true); setEnvioProg({ done: 0, total: 0 })
     try {
-      // O bucket de PDFs é privado — gera uma URL temporária pra Wasender
-      // conseguir buscar o documento na hora do envio.
-      const messages = await Promise.all(toSend.map(async m => ({
-        phone: m.contact.phone,
-        content: m.message.replace('{{nome}}', m.contact.name),
-        documentUrl: m.pdf?.storage_path ? await getPDFSignedUrl(m.pdf.storage_path) : null,
-        fileName: m.pdf?.name || null,
-      })))
+      const r = await enviarEmLotes(team.id, destinos, delay,
+        (done, total) => setEnvioProg({ done, total }))
 
-      const { data, error } = await supabase.functions.invoke('send-messages', {
-        body: { messages, teamId: team.id }
-      })
+      if (r.falhas === 0) {
+        toast.success(`${r.enviadas} mensagem(ns) enviada(s)`)
+      } else {
+        toast.error(`${r.enviadas} enviada(s), ${r.falhas} falharam. ${r.erros[0] || ''}`)
+      }
 
-      if (error) throw error
-
-      const sent = data?.results?.filter(r => r.status === 'sent').length || messages.length
-      toast.success(`${sent} mensagem(ns) enviada(s) com sucesso!`)
-      setGeneratedMessages([])
-      setSelectedIds(new Set())
-      setAiPrompt('')
-      setShowGenerated(false)
+      if (r.enviadas > 0) {
+        if (rascunhoId) await markDraftSent(rascunhoId)
+        setItens([]); setSelecionados(new Set()); setPrompt('')
+        setRascunhoId(null); setRascunhoNome('')
+        setDrafts(await getDrafts(team.id))
+        setEtapa(1)
+      }
     } catch (err) {
       toast.error('Erro no envio: ' + (err.message || ''))
     } finally {
-      setSending(false)
+      setEnviando(false)
     }
   }
 
-  return (
-    <div>
-      <h2 className="text-2xl font-display font-bold text-navy-500 mb-6">Nova Mensagem</h2>
+  const prontosCount = itens.filter(i => i.status === 'gerada' && i.message.trim()).length
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Coluna esquerda: PDFs + Prompt + Ações */}
+  return (
+    <div className="max-w-5xl">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+        <div>
+          <h2 className="text-2xl font-display font-bold text-navy-500">Nova Mensagem</h2>
+          <p className="text-sm text-gray-400 mt-0.5">
+            {destinatarios.length} destinatário(s) · {pdfs.length} PDF(s) na biblioteca
+          </p>
+        </div>
+        <button onClick={() => setMostrarRascunhos(v => !v)} className="btn-secondary text-xs gap-1.5">
+          <FolderOpen size={14} /> Rascunhos ({drafts.length})
+        </button>
+      </div>
+
+      {mostrarRascunhos && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 mb-6">
+          {drafts.length === 0 ? (
+            <p className="text-sm text-gray-400 text-center py-4">
+              Nenhum rascunho salvo. Na etapa de revisão você pode salvar as mensagens para continuar depois.
+            </p>
+          ) : (
+            <ul className="divide-y divide-gray-50">
+              {drafts.map(d => (
+                <li key={d.id}>
+                  <button onClick={() => carregarRascunho(d)}
+                    className="w-full flex items-center justify-between gap-3 py-3 px-2 hover:bg-gray-50 rounded-lg text-left">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-900 truncate">{d.name}</p>
+                      <p className="text-xs text-gray-400">
+                        {(d.items || []).length} mensagem(ns) ·{' '}
+                        {new Date(d.updated_at).toLocaleString('pt-BR')}
+                        {d.sent_at && <span className="text-emerald-600 ml-2">· já enviado</span>}
+                      </p>
+                    </div>
+                    <span onClick={e => excluirRascunho(d.id, e)}
+                      className="text-gray-300 hover:text-red-500 p-1 shrink-0"><Trash2 size={15} /></span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* Passos */}
+      <nav className="flex items-center gap-2 mb-6">
+        {ETAPAS.map((e, idx) => {
+          const ativa = etapa === e.n
+          const concluida = etapa > e.n
+          const podeIr = e.n === 1 || (e.n === 2 && escolhidos.length > 0) || (e.n === 3 && itens.length > 0)
+          return (
+            <div key={e.n} className="flex items-center gap-2">
+              <button
+                onClick={() => podeIr && setEtapa(e.n)}
+                disabled={!podeIr}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  ativa ? 'bg-navy-500 text-white'
+                    : concluida ? 'bg-navy-50 text-navy-500 hover:bg-navy-100'
+                    : 'text-gray-400'} ${!podeIr ? 'cursor-not-allowed' : ''}`}>
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs ${
+                  ativa ? 'bg-white/20' : concluida ? 'bg-navy-500 text-white' : 'bg-gray-100'}`}>
+                  {concluida ? <Check size={12} /> : e.n}
+                </span>
+                <span className="hidden sm:inline">{e.titulo}</span>
+              </button>
+              {idx < ETAPAS.length - 1 && <div className="w-4 h-px bg-gray-200" />}
+            </div>
+          )
+        })}
+      </nav>
+
+      {/* ETAPA 1 — DESTINATÁRIOS */}
+      {etapa === 1 && (
         <div className="space-y-4">
-          {/* Upload PDFs em massa */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="font-display font-semibold text-navy-500 flex items-center gap-2">
-                <FileText size={18} /> PDFs dos Clientes
-              </h3>
-              <span className="text-xs text-gray-400">
-                {matchedCount}/{contacts.length} clientes com PDF
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h3 className="font-display font-semibold text-navy-500 flex items-center gap-2">
+                  <FileText size={18} /> PDFs dos clientes
+                </h3>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  O código é lido do nome do arquivo — ex.: "Conta 355986.pdf"
+                </p>
+              </div>
+              <button onClick={() => pdfInputRef.current?.click()} disabled={uploading}
+                className="btn-secondary gap-1.5 shrink-0">
+                {uploading
+                  ? <><div className="animate-spin w-4 h-4 border-2 border-navy-500 border-t-transparent rounded-full" /> {uploadProg.done}/{uploadProg.total}</>
+                  : <><Upload size={16} /> Importar PDFs</>}
+              </button>
+              <input ref={pdfInputRef} type="file" accept=".pdf" multiple
+                onChange={handlePDFUpload} className="hidden" />
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+              <h3 className="font-display font-semibold text-navy-500">Para quem vai</h3>
+              <button onClick={() => setGrupoModal({})} className="btn-secondary text-xs gap-1.5">
+                <Plus size={14} /> Novo grupo
+              </button>
+            </div>
+
+            <div className="relative mb-3">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input value={busca} onChange={e => setBusca(e.target.value)}
+                placeholder="Buscar por nome, código ou telefone..." className="input pl-9" />
+            </div>
+
+            <div className="flex items-center justify-between mb-3 text-xs">
+              <div className="flex gap-2">
+                <button onClick={selecionarComPdf} className="text-accent-600 hover:underline">Com PDF</button>
+                <span className="text-gray-300">|</span>
+                <button onClick={selecionarTodos} className="text-accent-600 hover:underline">Todos</button>
+                <span className="text-gray-300">|</span>
+                <button onClick={limparSelecao} className="text-gray-400 hover:underline">Limpar</button>
+              </div>
+              <span className="text-gray-400">
+                {selecionados.size} selecionado(s) · {totalPdfs} PDF(s)
               </span>
             </div>
 
-            <button
-              onClick={() => pdfInputRef.current?.click()}
-              disabled={uploading}
-              className="btn-secondary w-full gap-1.5"
-            >
-              {uploading ? (
-                <><div className="animate-spin w-4 h-4 border-2 border-navy-500 border-t-transparent rounded-full" /> Enviando {uploadProgress.done}/{uploadProgress.total}...</>
-              ) : (
-                <><Upload size={16} /> Importar PDFs em massa</>
+            <div className="border border-gray-100 rounded-lg divide-y divide-gray-50 max-h-[30rem] overflow-auto">
+              {filtrados.length === 0 && (
+                <p className="p-8 text-center text-sm text-gray-400">Nenhum destinatário encontrado.</p>
               )}
-            </button>
-            <input
-              ref={pdfInputRef}
-              type="file"
-              accept=".pdf"
-              multiple
-              onChange={handlePDFUpload}
-              className="hidden"
-            />
-            <p className="text-xs text-gray-400">
-              O código do cliente será extraído do nome do arquivo (ex: "Conta 355986.pdf" → código 355986)
-            </p>
-          </div>
+              {filtrados.map(d => {
+                const marcado = selecionados.has(d.id)
+                const avisos = avisosDoDestinatario(d)
+                const bloqueado = avisos.some(a => a.nivel === 'erro')
+                return (
+                  <div key={d.id} className={`px-3 py-3 ${marcado ? 'bg-accent-50/50' : 'hover:bg-gray-50'}`}>
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input type="checkbox" checked={marcado} onChange={() => alternar(d.id)}
+                        className="rounded mt-1" />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {d.tipo === 'grupo' && (
+                            <span className="flex items-center gap-1 text-xs bg-navy-50 text-navy-500 px-2 py-0.5 rounded">
+                              {d.kind === 'empresa' ? <Building2 size={11} /> : <Users size={11} />}
+                              {d.contatos.length} contas
+                            </span>
+                          )}
+                          <span className="font-medium text-gray-900">{d.nome}</span>
+                          {d.pdfs.length > 0 && (
+                            <span className="text-xs text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded">
+                              {d.pdfs.length} PDF{d.pdfs.length > 1 ? 's' : ''}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          <span className="font-mono">{formatarTelefone(d.telefone)}</span>
+                          {d.tipo === 'grupo'
+                            ? <span className="ml-2">recebe: {d.titular}</span>
+                            : d.clientCode && <span className="text-navy-400 ml-2">#{d.clientCode}</span>}
+                        </p>
+                        {avisos.map((a, i) => (
+                          <p key={i} className={`text-xs mt-1 flex items-start gap-1 ${
+                            a.nivel === 'erro' ? 'text-red-600' : 'text-amber-600'}`}>
+                            <AlertTriangle size={12} className="shrink-0 mt-0.5" /> {a.texto}
+                          </p>
+                        ))}
+                      </div>
+                      {d.tipo === 'grupo' && (
+                        <button onClick={e => { e.preventDefault(); setGrupoModal(groups.find(g => g.id === d.grupoId)) }}
+                          className="text-xs text-accent-600 hover:underline shrink-0">editar</button>
+                      )}
+                    </label>
+                  </div>
+                )
+              })}
+            </div>
 
-          {/* Prompt IA */}
-          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-xs text-gray-400">
+                {comErro.length > 0
+                  ? <span className="text-red-600">{comErro.length} selecionado(s) com pendência</span>
+                  : 'Quem está num grupo não aparece separado — ninguém recebe duas vezes.'}
+              </p>
+              <button onClick={() => setEtapa(2)} disabled={escolhidos.length === 0} className="btn-primary">
+                Continuar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ETAPA 2 — MENSAGEM */}
+      {etapa === 2 && (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-4">
+          <div>
             <h3 className="font-display font-semibold text-navy-500 flex items-center gap-2">
               <Sparkles size={18} /> Instrução para a IA
             </h3>
-
-            <textarea
-              value={aiPrompt}
-              onChange={e => setAiPrompt(e.target.value)}
-              placeholder={'Ex: Gere uma mensagem informando sobre a rentabilidade da carteira, usando os dados do PDF de cada cliente.\n\nUse {{nome}} para personalizar.'}
-              className="input h-28 text-sm"
-            />
-
-            <div className="flex gap-2">
-              <button
-                onClick={handleGenerate}
-                disabled={generating || !aiPrompt.trim() || selectedIds.size === 0}
-                className="btn-primary flex-1 gap-1.5"
-              >
-                {generating ? (
-                  <><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Gerando {genProgress.done}/{genProgress.total}...</>
-                ) : (
-                  <><Sparkles size={16} /> Gerar para {selectedIds.size} contato(s)</>
-                )}
-              </button>
-            </div>
-
-            {selectedIds.size > 0 && selectedMatchedCount < selectedIds.size && (
-              <div className="flex items-start gap-2 bg-amber-50 text-amber-700 rounded-lg p-3 text-xs">
-                <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                <span>
-                  {selectedIds.size - selectedMatchedCount} contato(s) selecionado(s) não tem PDF associado.
-                  A IA vai gerar sem contexto de documento para esses.
-                </span>
-              </div>
-            )}
+            <p className="text-xs text-gray-400 mt-1">
+              Vai gerar {escolhidos.length} mensagem(ns). Use <code>{'{{nome}}'}</code> onde o nome deve aparecer.
+            </p>
           </div>
 
-          {/* Mensagens geradas — Preview e Envio */}
-          {generatedMessages.length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5 space-y-3">
-              <button
-                onClick={() => setShowGenerated(!showGenerated)}
-                className="flex items-center justify-between w-full"
-              >
-                <h3 className="font-display font-semibold text-navy-500">
-                  Mensagens Geradas ({generatedMessages.filter(m => m.status === 'generated').length})
-                </h3>
-                {showGenerated ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
-              </button>
+          <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
+            placeholder={'Ex.: Gere uma mensagem curta informando a rentabilidade do mês e do ano, com base no PDF do cliente. Tom direto, sem jargão.'}
+            className="input min-h-[10rem] leading-relaxed" />
 
-              {showGenerated && (
-                <div className="space-y-3 max-h-96 overflow-auto">
-                  {generatedMessages.map((m, i) => (
-                    <div key={i} className={`rounded-lg border p-3 text-sm ${m.status === 'error' ? 'border-red-200 bg-red-50' : 'border-gray-100'}`}>
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="font-medium text-xs text-gray-700">
-                          {m.contact.name}
-                          {m.pdf && <span className="text-gray-400 ml-1">• PDF: {m.pdf.client_code}</span>}
-                        </span>
-                        {m.status === 'generated' ? (
-                          <CheckCircle size={14} className="text-green-500" />
-                        ) : (
-                          <XCircle size={14} className="text-red-500" />
-                        )}
-                      </div>
-                      {m.status === 'generated' ? (
-                        <textarea
-                          value={m.message}
-                          onChange={e => updateGeneratedMessage(i, e.target.value)}
-                          className="w-full border border-gray-200 rounded p-2 text-xs resize-none"
-                          rows={3}
-                        />
-                      ) : (
-                        <p className="text-xs text-red-600">{m.error}</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <button
-                onClick={handleSendAll}
-                disabled={sending || generatedMessages.filter(m => m.status === 'generated').length === 0}
-                className="btn-primary w-full gap-1.5"
-              >
-                {sending ? (
-                  <><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Enviando...</>
-                ) : (
-                  <><Send size={16} /> Enviar {generatedMessages.filter(m => m.status === 'generated').length} mensagem(ns) com PDF</>
-                )}
-              </button>
+          {escolhidos.some(d => d.tipo === 'grupo') && (
+            <div className="flex gap-2 p-3 bg-navy-50/60 rounded-lg text-xs text-navy-500">
+              <AlertCircle size={15} className="shrink-0 mt-0.5" />
+              <span>
+                Para grupos, a IA escreve um texto <strong>sem números específicos</strong> e os PDFs de
+                todas as contas vão anexados. É proposital: a IA lê um PDF por vez, e citar a
+                rentabilidade de uma conta só para quem administra várias seria informação errada.
+              </span>
             </div>
           )}
-        </div>
 
-        {/* Coluna direita: Lista de contatos com match */}
-        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="font-display font-semibold text-navy-500">Destinatários</h3>
-            <div className="flex gap-1">
-              <button onClick={selectAllMatched} className="text-xs text-accent-600 hover:underline">
-                Com PDF
+          {escolhidos.filter(d => d.pdfs.length === 0).length > 0 && (
+            <div className="flex gap-2 p-3 bg-amber-50 rounded-lg text-xs text-amber-700">
+              <AlertTriangle size={15} className="shrink-0 mt-0.5" />
+              <span>
+                {escolhidos.filter(d => d.pdfs.length === 0).length} destinatário(s) sem PDF.
+                A mensagem sai genérica, sem dados da carteira.
+              </span>
+            </div>
+          )}
+
+          <div className="flex items-center justify-between pt-1">
+            <button onClick={() => setEtapa(1)} className="btn-secondary gap-1.5">
+              <ChevronLeft size={16} /> Voltar
+            </button>
+            <button onClick={gerar} disabled={gerando || !prompt.trim()} className="btn-primary gap-1.5">
+              {gerando
+                ? <><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Gerando {genProg.done}/{genProg.total}...</>
+                : <><Sparkles size={16} /> Gerar {escolhidos.length} mensagem(ns)</>}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ETAPA 3 — REVISAR E ENVIAR */}
+      {etapa === 3 && (
+        // pb-28: a barra de envio é sticky e cobriria o último cartão sem isso.
+        <div className="space-y-4 pb-28">
+          <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+            <input value={rascunhoNome} onChange={e => setRascunhoNome(e.target.value)}
+              placeholder="Nome deste lote (opcional)" className="input flex-1" />
+            <button onClick={salvarRascunho} disabled={salvando || prontosCount === 0}
+              className="btn-secondary gap-1.5 shrink-0">
+              <Save size={15} /> {salvando ? 'Salvando...' : rascunhoId ? 'Atualizar rascunho' : 'Salvar rascunho'}
+            </button>
+          </div>
+
+          {itens.map(item => {
+            const d = destinatarios.find(x => x.id === item.destinatarioId)
+            if (!d) return null
+            const avisos = avisosDoDestinatario(d)
+            const bloqueado = avisos.some(a => a.nivel === 'erro')
+            const textoFinal = aplicarNome(item.message, d.titular)
+
+            return (
+              <div key={item.destinatarioId}
+                className={`bg-white rounded-xl border shadow-sm overflow-hidden ${
+                  bloqueado ? 'border-red-200' : item.status === 'erro' ? 'border-red-200' : 'border-gray-100'}`}>
+
+                {/* Cabeçalho: para quem vai, bem visível */}
+                <div className="px-5 py-4 bg-gray-50/70 border-b border-gray-100">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {d.tipo === 'grupo'
+                          ? <span className="flex items-center gap-1 text-xs bg-navy-100 text-navy-600 px-2 py-0.5 rounded">
+                              {d.kind === 'empresa' ? <Building2 size={11} /> : <Users size={11} />} grupo
+                            </span>
+                          : <User size={14} className="text-gray-400" />}
+                        <h4 className="font-display font-semibold text-navy-500">{d.nome}</h4>
+                      </div>
+                      <p className="text-sm text-gray-600 mt-1">
+                        <span className="font-mono font-medium">{formatarTelefone(d.telefone)}</span>
+                        <span className="text-gray-400"> · {d.titular}</span>
+                      </p>
+                    </div>
+                    <button onClick={() => removerItem(item.destinatarioId)}
+                      className="text-gray-300 hover:text-red-500 shrink-0" title="Tirar do envio">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+
+                  {d.pdfs.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-3">
+                      {d.pdfs.map(p => (
+                        <span key={p.id}
+                          className="flex items-center gap-1 text-xs bg-white border border-gray-200 text-gray-600 px-2 py-1 rounded">
+                          <FileText size={11} className="text-emerald-600" />
+                          {p.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {avisos.map((a, i) => (
+                    <p key={i} className={`text-xs mt-2 flex items-start gap-1 ${
+                      a.nivel === 'erro' ? 'text-red-600 font-medium' : 'text-amber-600'}`}>
+                      <AlertTriangle size={12} className="shrink-0 mt-0.5" /> {a.texto}
+                    </p>
+                  ))}
+                </div>
+
+                {/* Editor grande */}
+                <div className="p-5">
+                  {item.status === 'erro' ? (
+                    <p className="text-sm text-red-600">Falha ao gerar: {item.error}</p>
+                  ) : (
+                    <>
+                      <textarea
+                        value={item.message}
+                        onChange={e => editarMensagem(item.destinatarioId, e.target.value)}
+                        className="w-full border border-gray-200 rounded-lg p-4 text-[15px] leading-relaxed
+                                   min-h-[12rem] resize-y focus:ring-2 focus:ring-accent-500
+                                   focus:border-transparent outline-none"
+                      />
+                      <div className="flex items-center justify-between mt-2">
+                        <span className={`text-xs ${item.message.length > 900 ? 'text-amber-600' : 'text-gray-400'}`}>
+                          {item.message.length} caracteres
+                          {item.message.includes('{{nome}}') && ' · {{nome}} será trocado no envio'}
+                        </span>
+                        <button onClick={() => setPreview({ nome: d.nome, telefone: d.telefone, texto: textoFinal, pdfs: d.pdfs })}
+                          className="text-xs text-accent-600 hover:underline flex items-center gap-1">
+                          <Eye size={13} /> Ver como chega
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+
+          {/* Barra de envio */}
+          <div className="sticky bottom-4 bg-white rounded-xl border border-gray-200 shadow-lg p-4
+                          flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-sm">
+              <p className="font-medium text-navy-500">
+                {prontosCount} mensagem(ns) prontas
+                {totalPdfs > 0 && <span className="text-gray-400 font-normal"> · {totalPdfs} anexo(s)</span>}
+              </p>
+              <p className="text-xs text-gray-400">
+                Enviadas em lotes de {tamanhoDoLote(delay)}, {delay}s entre cada mensagem
+                {comErro.length > 0 && <span className="text-red-600"> · {comErro.length} com pendência</span>}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => setEtapa(2)} className="btn-secondary gap-1.5">
+                <ChevronLeft size={16} /> Voltar
               </button>
-              <span className="text-gray-300">|</span>
-              <button onClick={selectAll} className="text-xs text-accent-600 hover:underline">
-                Todos
-              </button>
-              <span className="text-gray-300">|</span>
-              <button onClick={selectNone} className="text-xs text-gray-400 hover:underline">
-                Nenhum
+              <button onClick={enviar} disabled={enviando || prontosCount === 0 || comErro.length > 0}
+                className="btn-primary gap-1.5">
+                {enviando
+                  ? <><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Enviando {envioProg.done}/{envioProg.total}...</>
+                  : <><Send size={16} /> Enviar</>}
               </button>
             </div>
           </div>
+        </div>
+      )}
 
-          <input
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Buscar por nome, telefone ou código..."
-            className="input mb-3 text-sm"
-          />
+      {grupoModal && (
+        <GrupoModal
+          grupo={grupoModal.id ? grupoModal : null}
+          contacts={contacts}
+          onClose={() => setGrupoModal(null)}
+          onSaved={carregarTudo}
+        />
+      )}
 
-          <div className="text-xs text-gray-400 mb-2">
-            {selectedIds.size} selecionado(s) • {selectedMatchedCount} com PDF
-          </div>
-
-          <div className="max-h-[28rem] overflow-auto divide-y divide-gray-50 border border-gray-100 rounded-lg">
-            {filteredMatched.map(({ contact, pdf, matched: hasMatch }) => {
-              const isSelected = selectedIds.has(contact.id)
-              return (
-                <label
-                  key={contact.id}
-                  className={`flex items-center gap-3 px-3 py-2.5 cursor-pointer transition-colors ${
-                    isSelected ? 'bg-accent-50' : 'hover:bg-gray-50'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => toggleContact(contact.id)}
-                    className="rounded"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate">{contact.name}</p>
-                    <div className="flex items-center gap-2 text-xs text-gray-400">
-                      <span className="font-mono">{contact.phone}</span>
-                      {contact.client_code && (
-                        <span className="text-navy-400">#{contact.client_code}</span>
-                      )}
-                    </div>
-                  </div>
-                  {hasMatch ? (
-                    <span className="flex items-center gap-1 text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full">
-                      <FileText size={10} /> PDF
-                    </span>
-                  ) : contact.client_code ? (
-                    <span className="text-xs text-gray-300" title="Código presente, mas sem PDF correspondente">
-                      sem PDF
-                    </span>
-                  ) : null}
-                </label>
-              )
-            })}
+      {preview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setPreview(null)} />
+          <div className="relative bg-[#ECE5DD] rounded-2xl w-full max-w-md shadow-xl overflow-hidden">
+            <div className="bg-navy-500 text-white px-4 py-3">
+              <p className="font-medium text-sm">{preview.nome}</p>
+              <p className="text-xs text-navy-200 font-mono">{formatarTelefone(preview.telefone)}</p>
+            </div>
+            <div className="p-4 space-y-2 max-h-[60vh] overflow-auto">
+              <div className="bg-[#DCF8C6] rounded-lg rounded-tr-none p-3 ml-8 shadow-sm">
+                <p className="text-sm whitespace-pre-wrap text-gray-800">{preview.texto}</p>
+              </div>
+              {preview.pdfs.map(p => (
+                <div key={p.id} className="bg-[#DCF8C6] rounded-lg rounded-tr-none p-3 ml-8 shadow-sm flex items-center gap-2">
+                  <FileText size={16} className="text-gray-600 shrink-0" />
+                  <span className="text-xs text-gray-700 truncate">{p.name}</span>
+                </div>
+              ))}
+            </div>
+            <div className="px-4 py-3 bg-white border-t border-gray-100 flex justify-end">
+              <button onClick={() => setPreview(null)} className="btn-secondary text-xs">Fechar</button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

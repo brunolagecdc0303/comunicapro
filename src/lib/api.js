@@ -1,4 +1,8 @@
 import { supabase } from './supabase'
+import { extractClientCode } from './clientCode'
+
+// Reexportado para não quebrar quem já importava daqui.
+export { extractClientCode }
 
 // ============================================
 // CONTATOS
@@ -303,16 +307,7 @@ function normalizePhone(phone) {
   return clean
 }
 
-// Extrai código do cliente do nome do arquivo
-// Ex: "Conta 355986.pdf" → "355986", "355986_relatorio.pdf" → "355986"
-export function extractClientCode(filename) {
-  if (!filename) return null
-  // Remove extensão
-  const name = filename.replace(/\.[^.]+$/, '')
-  // Procura sequência de 4+ dígitos
-  const match = name.match(/(\d{4,})/)
-  return match ? match[1] : null
-}
+
 
 // ============================================
 // ACOMPANHAMENTO DE CLIENTES (FP + Produtos)
@@ -416,4 +411,228 @@ export async function saveTeamSettings(teamId, patch) {
   const { error } = await supabase.from('teams').update({ settings: merged }).eq('id', teamId)
   if (error) throw error
   return merged
+}
+
+// ============================================
+// GRUPOS FAMILIARES / EMPRESARIAIS
+// ============================================
+export async function getClientGroups(teamId) {
+  const { data, error } = await supabase
+    .from('client_groups')
+    .select('*, client_group_members(contact_id)')
+    .eq('team_id', teamId)
+    .order('name')
+  if (error) throw error
+  return (data || []).map(g => ({
+    ...g,
+    memberIds: (g.client_group_members || []).map(m => m.contact_id),
+  }))
+}
+
+export async function saveClientGroup(teamId, { id, name, kind, primaryContactId, memberIds }, userId) {
+  let groupId = id
+  if (groupId) {
+    const { error } = await supabase
+      .from('client_groups')
+      .update({ name, kind, primary_contact_id: primaryContactId })
+      .eq('id', groupId)
+    if (error) throw error
+    // Substitui a composição inteira: mais simples e previsível que
+    // calcular o diff de quem entrou e quem saiu.
+    const { error: delError } = await supabase
+      .from('client_group_members').delete().eq('group_id', groupId)
+    if (delError) throw delError
+  } else {
+    const { data, error } = await supabase
+      .from('client_groups')
+      .insert({ team_id: teamId, name, kind, primary_contact_id: primaryContactId, created_by: userId })
+      .select().single()
+    if (error) throw error
+    groupId = data.id
+  }
+
+  if (memberIds?.length) {
+    const rows = memberIds.map(contact_id => ({ group_id: groupId, contact_id }))
+    const { error } = await supabase.from('client_group_members').insert(rows)
+    if (error) throw error
+  }
+  return groupId
+}
+
+export async function deleteClientGroup(groupId) {
+  const { error } = await supabase.from('client_groups').delete().eq('id', groupId)
+  if (error) throw error
+}
+
+// ============================================
+// RASCUNHOS DE MENSAGEM
+// ============================================
+export async function getDrafts(teamId) {
+  const { data, error } = await supabase
+    .from('message_drafts')
+    .select('*')
+    .eq('team_id', teamId)
+    .order('updated_at', { ascending: false })
+  if (error) throw error
+  return data || []
+}
+
+export async function saveDraft(teamId, { id, name, prompt, items }, userId) {
+  if (id) {
+    const { data, error } = await supabase
+      .from('message_drafts')
+      .update({ name, prompt, items })
+      .eq('id', id).select().single()
+    if (error) throw error
+    return data
+  }
+  const { data, error } = await supabase
+    .from('message_drafts')
+    .insert({ team_id: teamId, name, prompt, items, created_by: userId })
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+export async function deleteDraft(draftId) {
+  const { error } = await supabase.from('message_drafts').delete().eq('id', draftId)
+  if (error) throw error
+}
+
+export async function markDraftSent(draftId) {
+  const { error } = await supabase
+    .from('message_drafts')
+    .update({ sent_at: new Date().toISOString() })
+    .eq('id', draftId)
+  if (error) throw error
+}
+
+// ============================================
+// ENVIO EM LOTES
+// ============================================
+// A Edge Function dorme `delay` segundos entre mensagens, e o worker do
+// Supabase é morto aos 150s (plano free). Mandar 38 destinatários de uma vez
+// com delay de 5s daria ~190s: o envio morria no meio, sem dizer quais saíram.
+// Por isso o envio é fatiado em lotes que cabem com folga na janela.
+const JANELA_SEGURA_S = 110
+
+export function tamanhoDoLote(delaySeconds = 5) {
+  // +1s por mensagem como estimativa da chamada à Wasender.
+  const porMensagem = Math.max(1, delaySeconds) + 1
+  return Math.max(3, Math.floor(JANELA_SEGURA_S / porMensagem))
+}
+
+/** Substitui {{nome}} em TODAS as ocorrências (replace simples troca só a primeira). */
+export function aplicarNome(texto, nome) {
+  return String(texto ?? '').split('{{nome}}').join(nome ?? '')
+}
+
+/**
+ * Monta as mensagens de um destinatário.
+ * Sem PDF: uma mensagem de texto.
+ * Com PDFs (caso dos grupos): o texto vai junto do primeiro documento e cada
+ * documento seguinte vai numa mensagem curta identificando a conta — é assim
+ * que chega legível no WhatsApp.
+ */
+export async function montarMensagens(destinatario) {
+  const texto = aplicarNome(destinatario.message, destinatario.name)
+  const pdfs = destinatario.pdfs || []
+
+  if (pdfs.length === 0) {
+    return [{ phone: destinatario.phone, content: texto }]
+  }
+
+  const mensagens = []
+  for (let i = 0; i < pdfs.length; i++) {
+    const pdf = pdfs[i]
+    // URL assinada gerada na hora do lote: o bucket é privado e o link é curto.
+    const documentUrl = pdf.storage_path ? await getPDFSignedUrl(pdf.storage_path) : null
+    mensagens.push({
+      phone: destinatario.phone,
+      content: i === 0 ? texto : `Conta ${pdf.client_code || pdf.name}`,
+      documentUrl,
+      fileName: pdf.name || null,
+    })
+  }
+  return mensagens
+}
+
+/**
+ * Envia em lotes. onProgress(enviadas, total, rotuloDoLote) a cada lote.
+ * Devolve { enviadas, falhas, erros[] } — parcial se algum lote falhar, para
+ * o usuário saber exatamente onde parou em vez de "deu erro".
+ */
+export async function enviarEmLotes(teamId, destinatarios, delaySeconds, onProgress) {
+  const todas = []
+  for (const d of destinatarios) {
+    todas.push(...await montarMensagens(d))
+  }
+
+  const lote = tamanhoDoLote(delaySeconds)
+  let enviadas = 0
+  let falhas = 0
+  const erros = []
+
+  for (let i = 0; i < todas.length; i += lote) {
+    const fatia = todas.slice(i, i + lote)
+    try {
+      const { data, error } = await supabase.functions.invoke('send-messages', {
+        body: { messages: fatia, teamId },
+      })
+      if (error) throw error
+      const ok = data?.results?.filter(r => r.status === 'sent').length ?? fatia.length
+      enviadas += ok
+      falhas += fatia.length - ok
+    } catch (err) {
+      falhas += fatia.length
+      erros.push(`Lote ${Math.floor(i / lote) + 1}: ${err.message || err}`)
+    }
+    onProgress?.(enviadas + falhas, todas.length)
+  }
+
+  return { enviadas, falhas, erros, total: todas.length }
+}
+
+// ============================================
+// GERAÇÃO PARA DESTINATÁRIOS (contatos e grupos)
+// ============================================
+/**
+ * Gera uma mensagem por destinatário.
+ *
+ * Contato individual: a IA recebe o PDF daquela conta e pode citar os números.
+ *
+ * Grupo: a IA gera SEM documento e, por instrução do system prompt, escreve um
+ * texto genérico, sem números. É deliberado — a Edge Function lê um PDF por
+ * chamada, e um texto citando a rentabilidade de uma conta só, mandado a quem
+ * administra várias, seria informação errada para o cliente. Os PDFs de todas
+ * as contas seguem anexados na mesma conversa.
+ */
+export async function gerarParaDestinatarios(prompt, destinatarios, teamId, onProgress) {
+  const resultados = []
+
+  for (let i = 0; i < destinatarios.length; i++) {
+    const d = destinatarios[i]
+    const ehGrupo = d.tipo === 'grupo'
+    const pdfId = ehGrupo ? null : (d.pdfs[0]?.id || null)
+
+    const contexto = ehGrupo
+      ? `O destinatário é ${d.titular}, que administra ${d.contatos.length} contas: ` +
+        d.contatos.map(c => `${c.name} (${c.client_code || 'sem código'})`).join(', ') +
+        `. Escreva uma única mensagem para essa pessoa, sem citar números de rentabilidade, ` +
+        `mencionando que os relatórios das contas seguem em anexo.`
+      : `O destinatário é: ${d.nome}${d.clientCode ? ` (conta ${d.clientCode})` : ''}`
+
+    try {
+      const { data, error } = await supabase.functions.invoke('generate-message', {
+        body: { prompt: `${prompt}\n\n${contexto}`, pdfId, teamId },
+      })
+      if (error) throw error
+      resultados.push({ destinatarioId: d.id, message: data.message, status: 'gerada' })
+    } catch (err) {
+      resultados.push({ destinatarioId: d.id, message: '', status: 'erro', error: err.message })
+    }
+    onProgress?.(i + 1, destinatarios.length)
+  }
+
+  return resultados
 }
