@@ -4,6 +4,7 @@ import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
 import { getClientTracking } from '../lib/api'
 import ClientDrawer from '../components/ClientDrawer'
+import RolagemDupla from '../components/RolagemDupla'
 import {
   PRODUCTS, STATUS_PRODUTO, TONS_STATUS, statusProduto, contarAtivos, contarAbertos,
   PROXIMIDADE, INDICACAO, rotuloDe, fpStage, STAGE_TONES, nextFPStatus, formatDate,
@@ -31,6 +32,7 @@ export default function Acompanhamento() {
   const [search, setSearch] = useState('')
   const [fpFilter, setFpFilter] = useState('todos')
   const [onlyTracked, setOnlyTracked] = useState(false)
+  const [filtroProduto, setFiltroProduto] = useState('todos')  // todos | abertos | ativos | <chave do produto>
   const [selected, setSelected] = useState(null)
 
   useEffect(() => { if (team?.id) load() }, [team?.id])
@@ -57,6 +59,15 @@ export default function Acompanhamento() {
 
       if (onlyTracked && !c.currentFP && !c.perfil && Object.keys(c.produtos || {}).length === 0) return false
 
+      if (tab === 'produtos' && filtroProduto !== 'todos') {
+        if (filtroProduto === 'abertos') return contarAbertos(c.produtos) > 0
+        if (filtroProduto === 'ativos')  return contarAtivos(c.produtos) > 0
+        // filtro por produto específico: quem ainda tem aquele item em aberto
+        const abertos = new Set(['oferecer', 'em_contato', 'tem_interesse', 'ja_conversamos'])
+        return abertos.has(c.produtos?.[filtroProduto]?.status)
+      }
+
+      if (tab !== 'fp') return true
       if (fpFilter === 'todos') return true
       if (fpFilter === 'vencendo') {
         const status = nextFPStatus(c.currentFP?.next_fp_date)
@@ -64,7 +75,7 @@ export default function Acompanhamento() {
       }
       return fpStage(c.currentFP).key === fpFilter
     })
-  }, [clients, search, fpFilter, onlyTracked])
+  }, [clients, search, fpFilter, onlyTracked, tab, filtroProduto])
 
   // Contadores do topo — leem a base inteira, não o filtro atual.
   const stats = useMemo(() => {
@@ -75,7 +86,8 @@ export default function Acompanhamento() {
       if (c.currentFP?.in_execution) emExecucao++
       if (!c.currentFP) semFP++
     }
-    return { total: clients.length, vencendo, emExecucao, semFP }
+    const comAberto = clients.filter(c => contarAbertos(c.produtos) > 0).length
+    return { total: clients.length, vencendo, emExecucao, semFP, comAberto }
   }, [clients])
 
   function exportCSV() {
@@ -143,7 +155,7 @@ export default function Acompanhamento() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
         <Stat label="Clientes" value={stats.total} />
         <Stat label="FP vencendo em 30d" value={stats.vencendo} tone="text-red-600"
           onClick={() => { setTab('fp'); setFpFilter('vencendo') }} />
@@ -151,6 +163,8 @@ export default function Acompanhamento() {
           onClick={() => { setTab('fp'); setFpFilter('em_execucao') }} />
         <Stat label="Sem FP" value={stats.semFP} tone="text-gray-400"
           onClick={() => { setTab('fp'); setFpFilter('sem_fp') }} />
+        <Stat label="Com produto em aberto" value={stats.comAberto} tone="text-accent-600"
+          onClick={() => { setTab('produtos'); setFiltroProduto('abertos') }} />
       </div>
 
       <div className="flex gap-1 border-b border-gray-200 mb-4">
@@ -178,6 +192,17 @@ export default function Acompanhamento() {
             className="w-full pl-9 pr-4 py-2.5 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-accent-500 focus:border-transparent outline-none"
           />
         </div>
+        {tab === 'produtos' && (
+          <select value={filtroProduto} onChange={e => setFiltroProduto(e.target.value)}
+            className="px-3 py-2.5 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-accent-500">
+            <option value="todos">Todos os clientes</option>
+            <option value="abertos">Com produto em aberto</option>
+            <option value="ativos">Com produto ativo</option>
+            <optgroup label="Em aberto por produto">
+              {PRODUCTS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+            </optgroup>
+          </select>
+        )}
         {tab === 'fp' && (
           <select value={fpFilter} onChange={e => setFpFilter(e.target.value)}
             className="px-3 py-2.5 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-accent-500">
@@ -203,14 +228,18 @@ export default function Acompanhamento() {
               : 'Nenhum cliente com esses filtros.'}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <RolagemDupla>
             {tab === 'fp' ? <FPTable rows={rows} onPick={setSelected} />
-              : tab === 'produtos' ? <ProductsTable rows={rows} onPick={setSelected} />
+              : tab === 'produtos' ? <ProductsTable rows={rows} onPick={setSelected} onFiltrarAbertos={() => setFiltroProduto('abertos')} />
               : <RelacaoTable rows={rows} onPick={setSelected} />}
-          </div>
+          </RolagemDupla>
         )}
         <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-400">
           {rows.length} cliente(s) · clique numa linha para editar
+          {tab === 'produtos' && filtroProduto !== 'todos' && (
+            <button onClick={() => setFiltroProduto('todos')}
+              className="ml-2 text-accent-600 hover:underline">limpar filtro</button>
+          )}
         </div>
       </div>
 
@@ -247,8 +276,8 @@ function FPTable({ rows, onPick }) {
           const next = nextFPStatus(fp?.next_fp_date)
           const combinados = fp?.combinados || []
           return (
-            <tr key={c.id} onClick={() => onPick(c)} className="hover:bg-gray-50/70 cursor-pointer">
-              <td className="px-4 py-3 sticky left-0 bg-white hover:bg-gray-50/70">
+            <tr key={c.id} onClick={() => onPick(c)} className="group hover:bg-gray-50/70 cursor-pointer">
+              <td className="px-4 py-3 sticky left-0 bg-white group-hover:bg-gray-50/70 shadow-[1px_0_0_0_rgb(243_244_246)]">
                 <div className="font-medium text-gray-900 whitespace-nowrap">{c.name}</div>
                 {c.client_code && (
                   <div className="text-xs text-gray-400 font-mono">{c.client_code}</div>
@@ -290,7 +319,7 @@ function FPTable({ rows, onPick }) {
   )
 }
 
-function ProductsTable({ rows, onPick }) {
+function ProductsTable({ rows, onPick, onFiltrarAbertos }) {
   return (
     <table className="w-full text-sm">
       <thead>
@@ -306,8 +335,8 @@ function ProductsTable({ rows, onPick }) {
           const ativos = contarAtivos(c.produtos)
           const abertos = contarAbertos(c.produtos)
           return (
-            <tr key={c.id} onClick={() => onPick(c)} className="hover:bg-gray-50/70 cursor-pointer">
-              <td className="px-4 py-3 sticky left-0 bg-white hover:bg-gray-50/70">
+            <tr key={c.id} onClick={() => onPick(c)} className="group hover:bg-gray-50/70 cursor-pointer">
+              <td className="px-4 py-3 sticky left-0 bg-white group-hover:bg-gray-50/70 shadow-[1px_0_0_0_rgb(243_244_246)]">
                 <div className="font-medium text-gray-900 whitespace-nowrap">{c.name}</div>
                 {c.client_code && (
                   <div className="text-xs text-gray-400 font-mono">{c.client_code}</div>
@@ -320,10 +349,16 @@ function ProductsTable({ rows, onPick }) {
                 </span>
               </td>
               <td className="px-4 py-3 text-center">
-                <span className={`px-2 py-0.5 rounded text-xs ${
-                  abertos > 0 ? 'bg-accent-100 text-accent-600' : 'bg-gray-100 text-gray-400'}`}>
+                <button
+                  onClick={e => { e.stopPropagation(); if (abertos > 0) onFiltrarAbertos?.() }}
+                  disabled={abertos === 0}
+                  title={abertos > 0 ? 'Ver só quem tem produto em aberto' : 'Nada em aberto'}
+                  className={`px-2 py-0.5 rounded text-xs ${
+                    abertos > 0
+                      ? 'bg-accent-100 text-accent-600 hover:bg-accent-200'
+                      : 'bg-gray-100 text-gray-400 cursor-default'}`}>
                   {abertos}
-                </span>
+                </button>
               </td>
               {PRODUCTS.map(prod => {
                 const linha = c.produtos?.[prod.key]
@@ -371,8 +406,8 @@ function RelacaoTable({ rows, onPick }) {
           const prox = PROXIMIDADE.find(x => x.key === p?.proximidade)
           const ind = INDICACAO.find(x => x.key === p?.indicacao)
           return (
-            <tr key={c.id} onClick={() => onPick(c)} className="hover:bg-gray-50/70 cursor-pointer">
-              <td className="px-4 py-3 sticky left-0 bg-white hover:bg-gray-50/70">
+            <tr key={c.id} onClick={() => onPick(c)} className="group hover:bg-gray-50/70 cursor-pointer">
+              <td className="px-4 py-3 sticky left-0 bg-white group-hover:bg-gray-50/70 shadow-[1px_0_0_0_rgb(243_244_246)]">
                 <div className="font-medium text-gray-900 whitespace-nowrap">{c.name}</div>
                 {c.client_code && <div className="text-xs text-gray-400 font-mono">{c.client_code}</div>}
               </td>
@@ -406,7 +441,7 @@ function Th({ children, center, sticky, title }) {
   return (
     <th title={title}
       className={`px-4 py-3 font-medium text-gray-500 whitespace-nowrap ${center ? 'text-center' : 'text-left'} ${
-        sticky ? 'sticky left-0 bg-gray-50 z-10' : ''}`}>
+        sticky ? 'sticky left-0 bg-gray-50 z-10 shadow-[1px_0_0_0_rgb(243_244_246)]' : ''}`}>
       {children}
     </th>
   )

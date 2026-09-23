@@ -13,6 +13,7 @@ import Campanhas from './pages/Campanhas'
 import EnviosProgramados from './pages/EnviosProgramados'
 import NovaMensagem from './pages/NovaMensagem'
 import Config from './pages/Config'
+import Assessores from './pages/Assessores'
 import './styles/index.css'
 
 function ProtectedRoute({ children }) {
@@ -41,6 +42,7 @@ function AppRoutes() {
         <Route path="envios-programados" element={<EnviosProgramados />} />
         <Route path="mensagens" element={<NovaMensagem />} />
         <Route path="config" element={<Config />} />
+        <Route path="admin" element={<Assessores />} />
       </Route>
     </Routes>
   )

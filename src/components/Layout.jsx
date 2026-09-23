@@ -2,7 +2,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import {
   LayoutDashboard, Users, MessageSquare, Send,
-  FileText, Settings, LogOut, Menu, X, CalendarClock, Table2
+  FileText, Settings, LogOut, Menu, X, CalendarClock, Table2, ShieldCheck, AlertTriangle
 } from 'lucide-react'
 import { useState } from 'react'
 
@@ -18,7 +18,7 @@ const nav = [
 ]
 
 export default function Layout() {
-  const { user, team, signOut } = useAuth()
+  const { user, team, ehAdmin, loading, signOut } = useAuth()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
@@ -40,7 +40,8 @@ export default function Layout() {
         </div>
 
         <nav className="flex-1 py-4 space-y-0.5 px-3">
-          {nav.map(({ to, icon: Icon, label }) => (
+          {[...nav, ...(ehAdmin ? [{ to: '/admin', icon: ShieldCheck, label: 'Assessores' }] : [])]
+            .map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}
@@ -97,7 +98,25 @@ export default function Layout() {
           </h1>
         </header>
         <div className="p-4 lg:p-8 max-w-6xl">
-          <Outlet />
+          {!loading && !team ? (
+            <div className="bg-white rounded-xl border border-amber-200 shadow-sm p-6 max-w-lg">
+              <div className="flex gap-3">
+                <AlertTriangle size={20} className="text-amber-500 shrink-0 mt-0.5" />
+                <div>
+                  <h2 className="font-display font-semibold text-navy-500">
+                    Conta ainda não vinculada
+                  </h2>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Seu acesso funciona, mas nenhuma carteira foi associada a ele ainda.
+                    Peça a quem administra o ComunicaPro para vincular sua conta a um time.
+                  </p>
+                  <p className="text-xs text-gray-400 mt-2 font-mono">{user?.email}</p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Outlet />
+          )}
         </div>
       </main>
     </div>

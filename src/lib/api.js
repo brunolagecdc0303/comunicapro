@@ -812,3 +812,27 @@ export async function saveContact(teamId, contato, userId) {
     throw err
   }
 }
+
+// ============================================
+// ADMINISTRAÇÃO DE ASSESSORES
+// ============================================
+export async function listarTimes() {
+  const { data, error } = await supabase.rpc('listar_times_admin')
+  if (error) throw error
+  return data || []
+}
+
+/** Cria usuário + carteira própria. Só funciona para quem está em super_admins. */
+export async function criarAssessor(email, senha, nomeDoTime) {
+  const { data, error } = await supabase.functions.invoke('criar-assessor', {
+    body: { email, senha, nomeDoTime },
+  })
+  if (error) {
+    // A Edge Function devolve o motivo no corpo; sem isso o usuário veria só
+    // "non-2xx status code", que não diz o que corrigir.
+    const detalhe = await error.context?.json?.().catch(() => null)
+    throw new Error(detalhe?.error || error.message)
+  }
+  if (data?.error) throw new Error(data.error)
+  return data
+}

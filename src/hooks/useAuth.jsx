@@ -6,6 +6,7 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [team, setTeam] = useState(null)
+  const [ehAdmin, setEhAdmin] = useState(false)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -29,13 +30,19 @@ export function AuthProvider({ children }) {
     // Não busca wasender_api_key/claude_api_key aqui: essas chaves ficam restritas
     // à tela de Configurações, que as busca sob demanda (ver Config.jsx). Evita
     // manter segredos na memória/estado global do app em toda página.
-    const { data } = await supabase
-      .from('team_members')
-      .select('team_id, role, teams(id, name, settings)')
-      .eq('user_id', userId)
-      .limit(1)
-      .single()
+    // maybeSingle: um usuário recém-criado ainda pode não ter time, e isso é
+    // um estado normal — não um erro. A tela trata mostrando o aviso certo.
+    const [{ data }, { data: admin }] = await Promise.all([
+      supabase
+        .from('team_members')
+        .select('team_id, role, teams(id, name, settings)')
+        .eq('user_id', userId)
+        .limit(1)
+        .maybeSingle(),
+      supabase.from('super_admins').select('user_id').eq('user_id', userId).maybeSingle(),
+    ])
     setTeam(data ? { ...data.teams, role: data.role } : null)
+    setEhAdmin(!!admin)
     setLoading(false)
   }
 
@@ -49,7 +56,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, team, loading, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, team, ehAdmin, loading, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   )
