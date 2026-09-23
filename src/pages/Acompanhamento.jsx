@@ -5,7 +5,8 @@ import { useAuth } from '../hooks/useAuth'
 import { getClientTracking } from '../lib/api'
 import ClientDrawer from '../components/ClientDrawer'
 import {
-  PRODUCTS, countProducts, fpStage, STAGE_TONES, nextFPStatus, formatDate,
+  PRODUCTS, STATUS_PRODUTO, TONS_STATUS, statusProduto, contarAtivos, contarAbertos,
+  PROXIMIDADE, INDICACAO, rotuloDe, fpStage, STAGE_TONES, nextFPStatus, formatDate,
 } from '../lib/tracking'
 
 const FP_FILTERS = [
@@ -54,7 +55,7 @@ export default function Acompanhamento() {
         c.phone?.includes(q)
       )) return false
 
-      if (onlyTracked && !c.currentFP && !c.products) return false
+      if (onlyTracked && !c.currentFP && !c.perfil && Object.keys(c.produtos || {}).length === 0) return false
 
       if (fpFilter === 'todos') return true
       if (fpFilter === 'vencendo') {
@@ -80,7 +81,9 @@ export default function Acompanhamento() {
   function exportCSV() {
     const header = tab === 'fp'
       ? ['Cliente', 'Código', 'Reunião agendada', 'FP realizado', 'Em execução', 'Próximo FP', 'Combinados']
-      : ['Cliente', 'Código', ...PRODUCTS.map(p => p.label)]
+      : tab === 'produtos'
+        ? ['Cliente', 'Código', 'Ativos', 'Em aberto', ...PRODUCTS.map(p => p.label)]
+        : ['Cliente', 'Código', 'Proximidade', 'Indicação', 'Nº indicações', 'Último feedback', 'Liquidez', 'Cross sell', 'Observações']
 
     const lines = rows.map(c => {
       if (tab === 'fp') {
@@ -94,21 +97,31 @@ export default function Acompanhamento() {
           (fp?.combinados || []).map(x => x.texto).join(' | '),
         ]
       }
-      const p = c.products
+      if (tab === 'produtos') {
+        return [
+          c.name, c.client_code || '', contarAtivos(c.produtos), contarAbertos(c.produtos),
+          ...PRODUCTS.map(prod => {
+            const l = c.produtos?.[prod.key]
+            if (!l) return ''
+            const st = statusProduto(l.status).label
+            return l.detalhe ? `${st} (${l.detalhe})` : st
+          }),
+        ]
+      }
+      const p = c.perfil
       return [
         c.name, c.client_code || '',
-        ...PRODUCTS.map(prod => {
-          if (!p?.[prod.field]) return 'Não'
-          const detail = prod.detail ? p[prod.detail.field] : null
-          return detail ? `Sim (${detail})` : 'Sim'
-        }),
+        rotuloDe(PROXIMIDADE, p?.proximidade) || '',
+        rotuloDe(INDICACAO, p?.indicacao) || '',
+        p?.num_indicacoes ?? '',
+        p?.feedback_carteira ? formatDate(p.feedback_carteira) : '',
+        p?.liquidez || '', p?.obs_cross_sell || '', p?.observacoes || '',
       ]
     })
 
     const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
     const csv = [header, ...lines].map(r => r.map(escape).join(',')).join('\n')
-    // BOM para o Excel abrir os acentos corretamente.
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `acompanhamento_${tab}_${new Date().toISOString().slice(0, 10)}.csv`
@@ -122,7 +135,7 @@ export default function Acompanhamento() {
         <div>
           <h2 className="text-2xl font-display font-bold text-navy-500">Acompanhamento</h2>
           <p className="text-sm text-gray-400 mt-0.5">
-            Visão consolidada de Financial Planning e produtos contratados.
+            Financial Planning, esteira de produtos e relacionamento — um cliente por linha.
           </p>
         </div>
         <button onClick={exportCSV} disabled={rows.length === 0} className="btn-secondary text-xs gap-1.5">
@@ -141,7 +154,7 @@ export default function Acompanhamento() {
       </div>
 
       <div className="flex gap-1 border-b border-gray-200 mb-4">
-        {[['fp', 'Financial Planning'], ['produtos', 'Produtos']].map(([key, label]) => (
+        {[['fp', 'Financial Planning'], ['produtos', 'Produtos'], ['relacao', 'Relacionamento']].map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -192,7 +205,8 @@ export default function Acompanhamento() {
         ) : (
           <div className="overflow-x-auto">
             {tab === 'fp' ? <FPTable rows={rows} onPick={setSelected} />
-                          : <ProductsTable rows={rows} onPick={setSelected} />}
+              : tab === 'produtos' ? <ProductsTable rows={rows} onPick={setSelected} />
+              : <RelacaoTable rows={rows} onPick={setSelected} />}
           </div>
         )}
         <div className="px-4 py-3 border-t border-gray-100 text-xs text-gray-400">
@@ -282,14 +296,15 @@ function ProductsTable({ rows, onPick }) {
       <thead>
         <tr className="bg-gray-50 border-b border-gray-100">
           <Th sticky>Cliente</Th>
-          <Th center>Total</Th>
-          {PRODUCTS.map(p => <Th key={p.field} center title={p.label}>{p.short}</Th>)}
+          <Th center title="Produtos fechados ou que o cliente já possui">Ativos</Th>
+          <Th center title="Produtos ainda em aberto na esteira">Em aberto</Th>
+          {PRODUCTS.map(p => <Th key={p.key} center title={p.label}>{p.short}</Th>)}
         </tr>
       </thead>
       <tbody className="divide-y divide-gray-50">
         {rows.map(c => {
-          const p = c.products
-          const total = countProducts(p)
+          const ativos = contarAtivos(c.produtos)
+          const abertos = contarAbertos(c.produtos)
           return (
             <tr key={c.id} onClick={() => onPick(c)} className="hover:bg-gray-50/70 cursor-pointer">
               <td className="px-4 py-3 sticky left-0 bg-white hover:bg-gray-50/70">
@@ -300,25 +315,85 @@ function ProductsTable({ rows, onPick }) {
               </td>
               <td className="px-4 py-3 text-center">
                 <span className={`px-2 py-0.5 rounded text-xs ${
-                  total > 0 ? 'bg-navy-50 text-navy-500' : 'bg-gray-100 text-gray-400'
-                }`}>{total}</span>
+                  ativos > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-100 text-gray-400'}`}>
+                  {ativos}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-center">
+                <span className={`px-2 py-0.5 rounded text-xs ${
+                  abertos > 0 ? 'bg-accent-100 text-accent-600' : 'bg-gray-100 text-gray-400'}`}>
+                  {abertos}
+                </span>
               </td>
               {PRODUCTS.map(prod => {
-                const has = !!p?.[prod.field]
-                const detail = has && prod.detail ? p[prod.detail.field] : null
+                const linha = c.produtos?.[prod.key]
+                const st = statusProduto(linha?.status)
+                const vazio = !linha
                 return (
-                  <td key={prod.field} className="px-4 py-3 text-center"
-                      title={detail ? `${prod.label}: ${detail}` : prod.label}>
-                    {has ? (
-                      detail
-                        ? <span className="text-xs text-emerald-700 whitespace-nowrap">{detail}</span>
-                        : <Check size={16} className="text-emerald-600 mx-auto" />
-                    ) : (
+                  <td key={prod.key} className="px-3 py-3 text-center"
+                      title={`${prod.label}: ${vazio ? 'não registrado' : st.label}${
+                        linha?.detalhe ? ` (${linha.detalhe})` : ''}`}>
+                    {vazio ? (
                       <span className="text-gray-200">—</span>
+                    ) : (
+                      <span className={`px-2 py-0.5 rounded text-xs whitespace-nowrap ${TONS_STATUS[st.tom]}`}>
+                        {linha.detalhe || st.label}
+                      </span>
                     )}
                   </td>
                 )
               })}
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+}
+
+function RelacaoTable({ rows, onPick }) {
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="bg-gray-50 border-b border-gray-100">
+          <Th sticky>Cliente</Th>
+          <Th>Proximidade</Th>
+          <Th>Indicação</Th>
+          <Th center>Nº</Th>
+          <Th>Último feedback</Th>
+          <Th>Liquidez</Th>
+          <Th>Observações</Th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-gray-50">
+        {rows.map(c => {
+          const p = c.perfil
+          const prox = PROXIMIDADE.find(x => x.key === p?.proximidade)
+          const ind = INDICACAO.find(x => x.key === p?.indicacao)
+          return (
+            <tr key={c.id} onClick={() => onPick(c)} className="hover:bg-gray-50/70 cursor-pointer">
+              <td className="px-4 py-3 sticky left-0 bg-white hover:bg-gray-50/70">
+                <div className="font-medium text-gray-900 whitespace-nowrap">{c.name}</div>
+                {c.client_code && <div className="text-xs text-gray-400 font-mono">{c.client_code}</div>}
+              </td>
+              <td className="px-4 py-3">
+                {prox ? <span className={`px-2 py-0.5 rounded text-xs whitespace-nowrap ${TONS_STATUS[prox.tom]}`}>
+                  {prox.label}</span> : <span className="text-gray-300">—</span>}
+              </td>
+              <td className="px-4 py-3">
+                {ind ? <span className={`px-2 py-0.5 rounded text-xs whitespace-nowrap ${TONS_STATUS[ind.tom]}`}>
+                  {ind.label}</span> : <span className="text-gray-300">—</span>}
+              </td>
+              <td className="px-4 py-3 text-center text-gray-600">{p?.num_indicacoes ?? '—'}</td>
+              <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{formatDate(p?.feedback_carteira)}</td>
+              <td className="px-4 py-3 text-gray-600 whitespace-nowrap">{p?.liquidez || '—'}</td>
+              <td className="px-4 py-3 text-gray-600 max-w-xs">
+                {p?.observacoes || p?.obs_cross_sell
+                  ? <span className="line-clamp-2" title={[p.obs_cross_sell, p.observacoes].filter(Boolean).join(' · ')}>
+                      {[p.obs_cross_sell, p.observacoes].filter(Boolean).join(' · ')}
+                    </span>
+                  : <span className="text-gray-300">—</span>}
+              </td>
             </tr>
           )
         })}

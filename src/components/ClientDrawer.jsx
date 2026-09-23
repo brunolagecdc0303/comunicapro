@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react'
 import { X, Plus, Trash2, Save, AlertTriangle } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
-import { saveClientProducts, createFPCycle, updateFPCycle, deleteFPCycle } from '../lib/api'
-import { PRODUCTS, formatDate, combinadosToText, textToCombinados } from '../lib/tracking'
+import { saveProductStatus, saveClientProfile, createFPCycle, updateFPCycle, deleteFPCycle } from '../lib/api'
+import { PRODUCTS, STATUS_PRODUTO, TONS_STATUS, statusProduto, PROXIMIDADE, INDICACAO,
+         formatDate, combinadosToText, textToCombinados } from '../lib/tracking'
 import { containsCPF, redactCPFs } from '../lib/privacy'
 
 const EMPTY_CYCLE = {
@@ -26,13 +27,15 @@ export default function ClientDrawer({ client, tab, onClose, onSaved }) {
   const [active, setActive] = useState(tab === 'produtos' ? 'produtos' : 'fp')
   const [saving, setSaving] = useState(false)
 
-  const [products, setProducts] = useState({})
+  const [produtos, setProdutos] = useState({})
+  const [perfil, setPerfil] = useState({})
   const [cycle, setCycle] = useState(EMPTY_CYCLE)
   const [cycleId, setCycleId] = useState(null)
   const [combinadosText, setCombinadosText] = useState('')
 
   useEffect(() => {
-    setProducts(client?.products || {})
+    setProdutos(client?.produtos || {})
+    setPerfil(client?.perfil || {})
     loadCycle(client?.currentFP || null)
     setActive(tab === 'produtos' ? 'produtos' : 'fp')
   }, [client?.id, tab])
@@ -76,24 +79,42 @@ export default function ClientDrawer({ client, tab, onClose, onSaved }) {
     }
   }
 
-  async function handleSaveProducts() {
-    setSaving(true)
+  async function mudarProduto(produtoKey, campo, valor) {
+    const atual = produtos[produtoKey] || {}
+    const proximo = { ...atual, [campo]: valor }
+    // Otimista: o chip muda na hora; um erro recarrega a verdade do banco.
+    setProdutos(p => ({ ...p, [produtoKey]: proximo }))
     try {
-      const payload = {}
-      for (const p of PRODUCTS) {
-        payload[p.field] = !!products[p.field]
-        if (p.detail) {
-          // Se desmarcou o produto, o detalhe deixa de fazer sentido.
-          payload[p.detail.field] = products[p.field]
-            ? (products[p.detail.field]?.trim() || null)
-            : null
-        }
-      }
-      await saveClientProducts(team.id, client.id, payload, user.id)
-      toast.success('Produtos salvos')
+      await saveProductStatus(team.id, client.id, produtoKey, {
+        status: proximo.status || 'oferecer',
+        detalhe: proximo.detalhe || null,
+        observacao: proximo.observacao || null,
+      }, user.id)
       onSaved?.()
     } catch (err) {
-      toast.error('Erro ao salvar produtos: ' + (err.message || ''))
+      toast.error('Erro ao salvar: ' + (err.message || ''))
+      setProdutos(p => ({ ...p, [produtoKey]: atual }))
+    }
+  }
+
+  async function salvarPerfil() {
+    setSaving(true)
+    try {
+      await saveClientProfile(team.id, client.id, {
+        proximidade: perfil.proximidade || null,
+        indicacao: perfil.indicacao || null,
+        num_indicacoes: perfil.num_indicacoes === '' || perfil.num_indicacoes == null
+          ? null : Number(perfil.num_indicacoes),
+        indicacao_obs: perfil.indicacao_obs || null,
+        feedback_carteira: perfil.feedback_carteira || null,
+        liquidez: perfil.liquidez || null,
+        obs_cross_sell: redactCPFs(perfil.obs_cross_sell) || null,
+        observacoes: redactCPFs(perfil.observacoes) || null,
+      }, user.id)
+      toast.success('Relacionamento salvo')
+      onSaved?.()
+    } catch (err) {
+      toast.error('Erro ao salvar: ' + (err.message || ''))
     } finally {
       setSaving(false)
     }
@@ -134,7 +155,7 @@ export default function ClientDrawer({ client, tab, onClose, onSaved }) {
         </header>
 
         <div className="px-6 pt-4 flex gap-1 border-b border-gray-100">
-          {[['fp', 'Financial Planning'], ['produtos', 'Produtos']].map(([key, label]) => (
+          {[['fp', 'FP'], ['produtos', 'Produtos'], ['relacao', 'Relacionamento']].map(([key, label]) => (
             <button
               key={key}
               onClick={() => setActive(key)}
@@ -248,33 +269,124 @@ export default function ClientDrawer({ client, tab, onClose, onSaved }) {
                 </div>
               )}
             </>
+          ) : active === 'produtos' ? (
+            <>
+              <p className="text-xs text-gray-400">
+                Cada produto guarda em que ponto a conversa está. Muda na hora ao clicar.
+              </p>
+
+              <div className="space-y-4">
+                {PRODUCTS.map(p => {
+                  const atual = produtos[p.key] || {}
+                  const st = statusProduto(atual.status)
+                  const emConversa = !['na', 'nao_quer', 'negado'].includes(st.key)
+                  return (
+                    <div key={p.key} className="border border-gray-100 rounded-lg p-3">
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div>
+                          <p className="text-sm font-medium text-gray-800">{p.label}</p>
+                          {p.hint && <p className="text-xs text-gray-400 mt-0.5">{p.hint}</p>}
+                        </div>
+                        <span className={`text-xs px-2 py-0.5 rounded shrink-0 ${TONS_STATUS[st.tom]}`}>
+                          {st.label}
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1">
+                        {STATUS_PRODUTO.map(op => (
+                          <button key={op.key}
+                            onClick={() => mudarProduto(p.key, 'status', op.key)}
+                            className={`text-xs px-2 py-1 rounded border transition-colors ${
+                              atual.status === op.key
+                                ? `${TONS_STATUS[op.tom]} border-transparent font-medium`
+                                : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
+                            {op.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      {p.detalhe && emConversa && (
+                        <input
+                          defaultValue={atual.detalhe || ''}
+                          onBlur={e => {
+                            if ((e.target.value || '') !== (atual.detalhe || ''))
+                              mudarProduto(p.key, 'detalhe', e.target.value)
+                          }}
+                          placeholder={p.detalhe}
+                          className="input mt-2 text-xs" />
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            </>
           ) : (
             <>
-              <div className="space-y-3">
-                {PRODUCTS.map(p => (
-                  <div key={p.field}>
-                    <label className="flex items-center gap-2 text-sm text-gray-700">
-                      <input type="checkbox" checked={!!products[p.field]}
-                        onChange={e => setProducts({ ...products, [p.field]: e.target.checked })}
-                        className="rounded" />
-                      {p.label}
-                    </label>
-                    {p.hint && <p className="text-xs text-gray-400 ml-6 mt-0.5">{p.hint}</p>}
-                    {p.detail && products[p.field] && (
-                      <input
-                        type="text"
-                        value={products[p.detail.field] || ''}
-                        onChange={e => setProducts({ ...products, [p.detail.field]: e.target.value })}
-                        placeholder={p.detail.label}
-                        className="input mt-2 ml-6 w-[calc(100%-1.5rem)]"
-                      />
-                    )}
-                  </div>
-                ))}
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Grau de proximidade">
+                  <select value={perfil.proximidade || ''}
+                    onChange={e => setPerfil({ ...perfil, proximidade: e.target.value })}
+                    className="input">
+                    <option value="">—</option>
+                    {PROXIMIDADE.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                  </select>
+                </Field>
+                <Field label="Indicação">
+                  <select value={perfil.indicacao || ''}
+                    onChange={e => setPerfil({ ...perfil, indicacao: e.target.value })}
+                    className="input">
+                    <option value="">—</option>
+                    {INDICACAO.map(o => <option key={o.key} value={o.key}>{o.label}</option>)}
+                  </select>
+                </Field>
               </div>
 
-              <button onClick={handleSaveProducts} disabled={saving} className="btn-primary gap-1.5">
-                <Save size={15} /> {saving ? 'Salvando...' : 'Salvar produtos'}
+              <div className="grid grid-cols-2 gap-4">
+                <Field label="Nº de indicações">
+                  <input type="number" min={0} value={perfil.num_indicacoes ?? ''}
+                    onChange={e => setPerfil({ ...perfil, num_indicacoes: e.target.value })}
+                    className="input" />
+                </Field>
+                <Field label="Último feedback de carteira">
+                  <input type="date" value={perfil.feedback_carteira || ''}
+                    onChange={e => setPerfil({ ...perfil, feedback_carteira: e.target.value })}
+                    className="input" />
+                </Field>
+              </div>
+
+              <Field label="Observação sobre indicações">
+                <input value={perfil.indicacao_obs || ''}
+                  onChange={e => setPerfil({ ...perfil, indicacao_obs: e.target.value })}
+                  placeholder="Ex.: pedi com NPS (10/07/26)" className="input" />
+              </Field>
+
+              <Field label="Liquidez" hint="Como você anota hoje: reserva e gasto mensal juntos.">
+                <input value={perfil.liquidez || ''}
+                  onChange={e => setPerfil({ ...perfil, liquidez: e.target.value })}
+                  placeholder="Ex.: 24k (gasto 4k)" className="input" />
+              </Field>
+
+              <Field label="Observações de cross sell">
+                <textarea rows={3} value={perfil.obs_cross_sell || ''}
+                  onChange={e => setPerfil({ ...perfil, obs_cross_sell: e.target.value })}
+                  className="input" />
+              </Field>
+
+              <Field label="Observações gerais">
+                <textarea rows={3} value={perfil.observacoes || ''}
+                  onChange={e => setPerfil({ ...perfil, observacoes: e.target.value })}
+                  className="input" />
+              </Field>
+
+              {(containsCPF(perfil.obs_cross_sell) || containsCPF(perfil.observacoes)) && (
+                <div className="flex gap-2 p-3 bg-red-50 border border-red-100 rounded-lg text-xs text-red-700">
+                  <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+                  <span>Há um CPF nas observações. Ele será removido ao salvar.</span>
+                </div>
+              )}
+
+              <button onClick={salvarPerfil} disabled={saving} className="btn-primary gap-1.5">
+                <Save size={15} /> {saving ? 'Salvando...' : 'Salvar relacionamento'}
               </button>
             </>
           )}

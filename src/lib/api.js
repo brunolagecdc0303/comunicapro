@@ -305,19 +305,23 @@ export function normalizePhone(phone) {
 // de linhas por time — não compensa criar view no banco (e uma view exigiria
 // security_invoker pra não furar a RLS).
 export async function getClientTracking(teamId) {
-  const [contactsRes, productsRes, cyclesRes] = await Promise.all([
+  const [contactsRes, statusRes, perfilRes, cyclesRes] = await Promise.all([
     supabase.from('contacts').select('id, name, phone, email, client_code, tags').eq('team_id', teamId).order('name'),
-    supabase.from('client_products').select('*').eq('team_id', teamId),
+    supabase.from('client_product_status').select('*').eq('team_id', teamId),
+    supabase.from('client_profile').select('*').eq('team_id', teamId),
     supabase.from('fp_cycles').select('*').eq('team_id', teamId).order('created_at', { ascending: false }),
   ])
-  if (contactsRes.error) throw contactsRes.error
-  if (productsRes.error) throw productsRes.error
-  if (cyclesRes.error) throw cyclesRes.error
+  for (const r of [contactsRes, statusRes, perfilRes, cyclesRes]) if (r.error) throw r.error
 
-  const productsByContact = new Map(productsRes.data.map(p => [p.contact_id, p]))
+  // { contact_id: { produto: {status, detalhe, observacao} } }
+  const statusPorContato = new Map()
+  for (const linha of statusRes.data) {
+    if (!statusPorContato.has(linha.contact_id)) statusPorContato.set(linha.contact_id, {})
+    statusPorContato.get(linha.contact_id)[linha.produto] = linha
+  }
 
-  // cycles já vem ordenado do mais novo pro mais antigo; o primeiro de cada
-  // contato é o ciclo atual, o resto é histórico.
+  const perfilPorContato = new Map(perfilRes.data.map(p => [p.contact_id, p]))
+
   const cyclesByContact = new Map()
   for (const cycle of cyclesRes.data) {
     if (!cyclesByContact.has(cycle.contact_id)) cyclesByContact.set(cycle.contact_id, [])
@@ -328,22 +332,36 @@ export async function getClientTracking(teamId) {
     const cycles = cyclesByContact.get(contact.id) || []
     return {
       ...contact,
-      products: productsByContact.get(contact.id) || null,
+      produtos: statusPorContato.get(contact.id) || {},
+      perfil: perfilPorContato.get(contact.id) || null,
       currentFP: cycles[0] || null,
       fpHistory: cycles,
     }
   })
 }
 
-export async function saveClientProducts(teamId, contactId, values, userId) {
+/** Grava o estágio de UM produto de um cliente. */
+export async function saveProductStatus(teamId, contactId, produto, valores, userId) {
   const { data, error } = await supabase
-    .from('client_products')
+    .from('client_product_status')
     .upsert(
-      { team_id: teamId, contact_id: contactId, ...values, updated_by: userId },
+      { team_id: teamId, contact_id: contactId, produto, ...valores, updated_by: userId },
+      { onConflict: 'contact_id,produto' }
+    )
+    .select().single()
+  if (error) throw error
+  return data
+}
+
+/** Grava o perfil de relacionamento do cliente. */
+export async function saveClientProfile(teamId, contactId, valores, userId) {
+  const { data, error } = await supabase
+    .from('client_profile')
+    .upsert(
+      { team_id: teamId, contact_id: contactId, ...valores, updated_by: userId },
       { onConflict: 'contact_id' }
     )
-    .select()
-    .single()
+    .select().single()
   if (error) throw error
   return data
 }
