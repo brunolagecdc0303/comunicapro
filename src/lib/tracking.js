@@ -170,3 +170,59 @@ export function textToCombinados(text, previous = []) {
     .filter(Boolean)
     .map(texto => ({ texto, feito: doneByText.get(texto) ?? false }))
 }
+
+// ============================================
+// LEMBRETES RECORRENTES
+// ============================================
+export const FREQUENCIAS = [
+  { key: 'mensal',  label: 'Todo mês' },
+  { key: 'semanal', label: 'Toda semana' },
+]
+
+export const DIAS_DA_SEMANA = [
+  { key: 0, label: 'domingo' }, { key: 1, label: 'segunda' }, { key: 2, label: 'terça' },
+  { key: 3, label: 'quarta' },  { key: 4, label: 'quinta' },  { key: 5, label: 'sexta' },
+  { key: 6, label: 'sábado' },
+]
+
+/**
+ * A regra bate com esta data?
+ * Espelha public.fp_lembrete_vence_em — inclusive o ajuste de fim de mês:
+ * "todo dia 31" em fevereiro cai no dia 28 (ou 29), senão o mês seria pulado
+ * em silêncio e o assessor nunca saberia.
+ */
+export function venceEm(lembrete, date) {
+  if (!lembrete || !date) return false
+  if (lembrete.frequencia === 'semanal') return date.getDay() === lembrete.dia_da_semana
+  if (lembrete.frequencia !== 'mensal') return false
+  const ultimoDoMes = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate()
+  return date.getDate() === Math.min(lembrete.dia_do_mes, ultimoDoMes)
+}
+
+/** Próxima data em que o lembrete dispara, ou null se a regra já terminou. */
+export function proximoEnvio(lembrete, hoje = new Date()) {
+  if (!lembrete || !lembrete.ativo) return null
+  const inicio = parseDateOnly(lembrete.inicio)
+  const fim = parseDateOnly(lembrete.fim)
+  let d = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate())
+  if (inicio && inicio > d) d = inicio
+
+  // 400 dias cobrem qualquer regra mensal ou semanal.
+  for (let i = 0; i < 400; i++) {
+    if (fim && d > fim) return null
+    if (venceEm(lembrete, d)) return d
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)
+  }
+  return null
+}
+
+/** "Todo dia 15, às 09:00" — a regra em uma linha. */
+export function descreverRecorrencia(lembrete) {
+  if (!lembrete) return ''
+  const hora = String(lembrete.hora || '09:00').slice(0, 5)
+  if (lembrete.frequencia === 'semanal') {
+    const dia = DIAS_DA_SEMANA.find(d => d.key === lembrete.dia_da_semana)
+    return `Toda ${dia?.label || 'semana'}, às ${hora}`
+  }
+  return `Todo dia ${lembrete.dia_do_mes}, às ${hora}`
+}

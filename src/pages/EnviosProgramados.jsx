@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../hooks/useAuth'
-import { getCampaigns, cancelCampaign } from '../lib/api'
+import { getCampaigns, cancelCampaign, getFPLembretes, setFPLembreteAtivo, previewFPLembretes, saveTeamSettings } from '../lib/api'
 import CampaignModal from '../components/CampaignModal'
-import { CalendarClock, Plus, Clock, Users, Send, XCircle, Ban } from 'lucide-react'
+import { proximoEnvio, descreverRecorrencia } from '../lib/tracking'
+import { CalendarClock, Plus, Clock, Users, Send, XCircle, Ban, Repeat, Power, PowerOff, Eye, PauseCircle, PlayCircle } from 'lucide-react'
 import { format } from 'date-fns'
 import { ptBR } from 'date-fns/locale'
 import toast from 'react-hot-toast'
@@ -31,15 +32,58 @@ export default function EnviosProgramados() {
   const [showCreate, setShowCreate] = useState(false)
   const [cancellingId, setCancellingId] = useState(null)
 
+  // Lembretes recorrentes: a regra, não o envio. Ficam aqui porque é onde se
+  // olha "o que ainda vai sair".
+  const [lembretes, setLembretes] = useState([])
+  const [pausado, setPausado] = useState(false)
+  const [dataPreview, setDataPreview] = useState(new Date().toISOString().slice(0, 10))
+  const [preview, setPreview] = useState(null)
+  const [carregandoPreview, setCarregandoPreview] = useState(false)
+
   useEffect(() => {
-    if (team?.id) load()
+    if (team?.id) {
+      load()
+      setPausado(!!team.settings?.lembretes_recorrentes_pausados)
+    }
   }, [team])
 
   async function load() {
     setLoading(true)
-    try { setCampaigns(await getCampaigns(team.id)) }
+    try {
+      const [cs, ls] = await Promise.all([getCampaigns(team.id), getFPLembretes(team.id)])
+      setCampaigns(cs)
+      setLembretes(ls)
+    }
     catch { toast.error('Erro ao carregar envios') }
     finally { setLoading(false) }
+  }
+
+  async function alternarLembrete(l) {
+    try {
+      await setFPLembreteAtivo(l.id, !l.ativo)
+      setLembretes(ls => ls.map(x => x.id === l.id ? { ...x, ativo: !x.ativo } : x))
+    } catch (err) {
+      toast.error('Erro ao alterar: ' + (err.message || ''))
+    }
+  }
+
+  async function alternarPausa() {
+    const proximo = !pausado
+    setPausado(proximo)
+    try {
+      await saveTeamSettings(team.id, { lembretes_recorrentes_pausados: proximo })
+      toast.success(proximo ? 'Lembretes recorrentes pausados' : 'Lembretes recorrentes reativados')
+    } catch (err) {
+      setPausado(!proximo)
+      toast.error('Erro ao salvar: ' + (err.message || ''))
+    }
+  }
+
+  async function verPreview() {
+    setCarregandoPreview(true)
+    try { setPreview(await previewFPLembretes(team.id, dataPreview)) }
+    catch (err) { toast.error('Erro ao pré-visualizar: ' + (err.message || '')) }
+    finally { setCarregandoPreview(false) }
   }
 
   async function handleCancel(id) {
@@ -101,6 +145,98 @@ export default function EnviosProgramados() {
                   />
                 ))}
               </div>
+            )}
+          </section>
+
+          <section>
+            <div className="flex items-center justify-between mb-3 gap-3">
+              <h3 className="text-sm font-display font-semibold text-navy-500 flex items-center gap-1.5">
+                <Repeat size={15} /> Lembretes recorrentes
+              </h3>
+              {lembretes.length > 0 && (
+                <button onClick={alternarPausa}
+                  className={`text-xs flex items-center gap-1 ${pausado ? 'text-emerald-600' : 'text-gray-400 hover:text-gray-600'}`}>
+                  {pausado ? <><PlayCircle size={14} /> Reativar todos</> : <><PauseCircle size={14} /> Pausar todos</>}
+                </button>
+              )}
+            </div>
+
+            {pausado && lembretes.length > 0 && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-accent-50 border border-accent-100 text-xs text-accent-700">
+                Os lembretes recorrentes estão pausados — nada sai automaticamente até você reativar.
+              </div>
+            )}
+
+            {lembretes.length === 0 ? (
+              <p className="text-sm text-gray-400">
+                Nenhum lembrete recorrente. Eles são criados no FP do cliente, em Acompanhamento.
+              </p>
+            ) : (
+              <>
+                <div className="bg-white rounded-xl border border-gray-100 shadow-sm divide-y divide-gray-50">
+                  {lembretes.map(l => {
+                    const proximo = proximoEnvio(l)
+                    return (
+                      <div key={l.id} className={`px-5 py-3 flex items-start justify-between gap-3 ${l.ativo && !pausado ? '' : 'opacity-60'}`}>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-navy-500 truncate">
+                            {l.titulo}
+                            <span className="text-gray-400 font-normal"> · {l.contacts?.name || 'cliente removido'}</span>
+                          </p>
+                          <p className="text-xs text-gray-500 mt-0.5">{descreverRecorrencia(l)}</p>
+                          <p className="text-xs text-gray-400 mt-0.5">
+                            {!l.ativo ? 'Desligado'
+                              : pausado ? 'Pausado'
+                              : proximo ? `Próximo envio: ${proximo.toLocaleDateString('pt-BR')}`
+                              : 'Período encerrado'}
+                            {l.total_enviado > 0 && ` · ${l.total_enviado} enviado(s)`}
+                            {!l.contacts?.phone && ' · sem telefone cadastrado'}
+                          </p>
+                        </div>
+                        <button onClick={() => alternarLembrete(l)} title={l.ativo ? 'Desligar' : 'Ligar'}
+                          className={`shrink-0 ${l.ativo ? 'text-emerald-600 hover:text-emerald-700' : 'text-gray-400 hover:text-gray-600'}`}>
+                          {l.ativo ? <Power size={16} /> : <PowerOff size={16} />}
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-end gap-2">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-500 mb-1">Conferir o que sai em</label>
+                    <input type="date" value={dataPreview} onChange={e => setDataPreview(e.target.value)}
+                      className="input text-sm w-44" />
+                  </div>
+                  <button onClick={verPreview} disabled={carregandoPreview} className="btn-secondary gap-1.5 text-sm">
+                    <Eye size={14} /> {carregandoPreview ? 'Conferindo...' : 'Pré-visualizar'}
+                  </button>
+                </div>
+
+                {preview && (
+                  <div className="mt-3 bg-white rounded-xl border border-gray-100 shadow-sm p-4">
+                    {preview.length === 0 ? (
+                      <p className="text-sm text-gray-400">Nenhum lembrete sai nessa data.</p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {preview.map((p, i) => (
+                          <li key={i} className="text-xs border-b border-gray-50 last:border-0 pb-2 last:pb-0">
+                            <p className="font-medium text-navy-500">
+                              {p.contact_name}
+                              <span className="text-gray-400 font-normal"> · {p.phone}</span>
+                              {p.recipient === 'assessor' && <span className="ml-1 text-accent-600">(resumo para você)</span>}
+                            </p>
+                            <p className="text-gray-600 mt-0.5 whitespace-pre-wrap">{p.content}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <p className="text-xs text-gray-400 mt-3">
+                      Pré-visualização: nada foi enviado nem enfileirado.
+                    </p>
+                  </div>
+                )}
+              </>
             )}
           </section>
 

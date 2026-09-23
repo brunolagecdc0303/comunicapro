@@ -6,6 +6,7 @@ import { saveProductStatus, saveClientProfile, createFPCycle, updateFPCycle, del
 import { PRODUCTS, STATUS_PRODUTO, TONS_STATUS, statusProduto, PROXIMIDADE, INDICACAO,
          formatDate, combinadosToText, textToCombinados } from '../lib/tracking'
 import { containsCPF, redactCPFs } from '../lib/privacy'
+import LembretesRecorrentes from './LembretesRecorrentes'
 
 const EMPTY_CYCLE = {
   meeting_scheduled_at: '',
@@ -247,6 +248,15 @@ export default function ClientDrawer({ client, tab, onClose, onSaved }) {
                   </button>
                 )}
               </div>
+
+              <LembretesRecorrentes
+                teamId={team.id}
+                userId={user.id}
+                client={client}
+                cycleId={cycleId}
+                combinados={textToCombinados(combinadosText, cycle.combinados)}
+                onChanged={onSaved}
+              />
 
               {history.length > 0 && (
                 <div className="pt-4 border-t border-gray-100">

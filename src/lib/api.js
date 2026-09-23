@@ -421,6 +421,96 @@ export async function saveTeamSettings(teamId, patch) {
 }
 
 // ============================================
+// LEMBRETES RECORRENTES (nascem de um FP)
+// ============================================
+// O que se grava aqui é a REGRA ("todo dia 15"), não uma mensagem agendada.
+// Quem transforma regra em mensagem é o cron diário, que enfileira na
+// message_queue como qualquer outro envio.
+
+export async function getFPLembretes(teamId) {
+  const { data, error } = await supabase
+    .from('fp_lembretes')
+    .select('*, contacts(id, name, phone, client_code)')
+    .eq('team_id', teamId)
+    .order('ativo', { ascending: false })
+    .order('titulo')
+  if (error) throw error
+  return data || []
+}
+
+export async function getFPLembretesDoCliente(teamId, contactId) {
+  const { data, error } = await supabase
+    .from('fp_lembretes')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('contact_id', contactId)
+    .order('created_at')
+  if (error) throw error
+  return data || []
+}
+
+/**
+ * Cria ou atualiza um lembrete.
+ * O campo da frequência que não vale vai a null de propósito: deixar um
+ * dia_do_mes velho em um lembrete que virou semanal é o tipo de resto que
+ * depois ninguém entende ao ler a linha no banco.
+ */
+export async function saveFPLembrete(teamId, contactId, valores, userId) {
+  const mensal = valores.frequencia !== 'semanal'
+  const linha = {
+    team_id: teamId,
+    contact_id: contactId,
+    fp_cycle_id: valores.fp_cycle_id || null,
+    titulo: valores.titulo,
+    // Rede de segurança: CPF não sobe nem dentro do texto da mensagem.
+    template: redactCPFs(valores.template),
+    frequencia: mensal ? 'mensal' : 'semanal',
+    dia_do_mes: mensal ? Number(valores.dia_do_mes) : null,
+    dia_da_semana: mensal ? null : Number(valores.dia_da_semana),
+    hora: valores.hora || '09:00',
+    inicio: valores.inicio || new Date().toISOString().slice(0, 10),
+    fim: valores.fim || null,
+    ativo: valores.ativo !== false,
+    copia_assessor: !!valores.copia_assessor,
+  }
+
+  if (valores.id) {
+    const { data, error } = await supabase
+      .from('fp_lembretes').update(linha).eq('id', valores.id).select().single()
+    if (error) throw error
+    return data
+  }
+  const { data, error } = await supabase
+    .from('fp_lembretes').insert({ ...linha, created_by: userId }).select().single()
+  if (error) throw error
+  return data
+}
+
+export async function setFPLembreteAtivo(id, ativo) {
+  const { error } = await supabase.from('fp_lembretes').update({ ativo }).eq('id', id)
+  if (error) throw error
+}
+
+export async function deleteFPLembrete(id) {
+  const { error } = await supabase.from('fp_lembretes').delete().eq('id', id)
+  if (error) throw error
+}
+
+/**
+ * O que sairia em uma data — sempre dry run, sempre restrito ao próprio time
+ * (a função no banco checa a participação por dentro).
+ * Passar a data permite conferir "o que sai no dia 15" sem esperar o dia 15.
+ */
+export async function previewFPLembretes(teamId, data) {
+  const { data: linhas, error } = await supabase.rpc('preview_fp_lembretes', {
+    p_team_id: teamId,
+    p_data: data || new Date().toISOString().slice(0, 10),
+  })
+  if (error) throw error
+  return linhas || []
+}
+
+// ============================================
 // GRUPOS FAMILIARES / EMPRESARIAIS
 // ============================================
 export async function getClientGroups(teamId) {
