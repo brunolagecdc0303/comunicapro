@@ -3,7 +3,7 @@ import { X, Plus, Trash2, Save, AlertTriangle } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
 import { saveProductStatus, saveClientProfile, createFPCycle, updateFPCycle, deleteFPCycle } from '../lib/api'
-import { PRODUCTS, STATUS_PRODUTO, TONS_STATUS, statusProduto, PROXIMIDADE, INDICACAO,
+import { PRODUCTS as CATALOGO_FIXO, STATUS_PRODUTO, TONS_STATUS, statusProduto, PROXIMIDADE, INDICACAO,
          formatDate, combinadosToText, textToCombinados } from '../lib/tracking'
 import { containsCPF, redactCPFs } from '../lib/privacy'
 import LembretesRecorrentes from './LembretesRecorrentes'
@@ -23,7 +23,7 @@ const EMPTY_CYCLE = {
  * marca produto por produto, com espaço para os campos "qual seguradora/
  * corretora/consorciadora".
  */
-export default function ClientDrawer({ client, tab, onClose, onSaved }) {
+export default function ClientDrawer({ client, tab, produtos: PRODUCTS = CATALOGO_FIXO, onClose, onSaved }) {
   const { user, team } = useAuth()
   const [active, setActive] = useState(tab === 'produtos' ? 'produtos' : 'fp')
   const [saving, setSaving] = useState(false)

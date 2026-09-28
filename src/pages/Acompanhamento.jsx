@@ -1,12 +1,14 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Search, Download, Check } from 'lucide-react'
+import { Search, Download, Check, Settings2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
 import { getClientTracking } from '../lib/api'
+import { getProdutosPersonalizados } from '../lib/produtos'
 import ClientDrawer from '../components/ClientDrawer'
 import RolagemDupla from '../components/RolagemDupla'
+import GerenciarProdutos from '../components/GerenciarProdutos'
 import {
-  PRODUCTS, STATUS_PRODUTO, TONS_STATUS, statusProduto, contarAtivos, contarAbertos,
+  catalogoCompleto, STATUS_PRODUTO, TONS_STATUS, statusProduto, contarAtivos, contarAbertos,
   PROXIMIDADE, INDICACAO, rotuloDe, fpStage, STAGE_TONES, nextFPStatus, formatDate,
 } from '../lib/tracking'
 
@@ -34,17 +36,30 @@ export default function Acompanhamento() {
   const [onlyTracked, setOnlyTracked] = useState(false)
   const [filtroProduto, setFiltroProduto] = useState('todos')  // todos | abertos | ativos | <chave do produto>
   const [selected, setSelected] = useState(null)
+  const [personalizados, setPersonalizados] = useState([])
+  const [gerenciando, setGerenciando] = useState(false)
+  const PRODUCTS = useMemo(() => catalogoCompleto(personalizados), [personalizados])
 
   useEffect(() => { if (team?.id) load() }, [team?.id])
 
   async function load() {
     setLoading(true)
     try {
-      setClients(await getClientTracking(team.id))
+      const [lista] = await Promise.all([getClientTracking(team.id), loadProdutos()])
+      setClients(lista)
     } catch (err) {
       toast.error('Erro ao carregar acompanhamento: ' + (err.message || ''))
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function loadProdutos() {
+    try {
+      setPersonalizados(await getProdutosPersonalizados(team.id))
+    } catch (err) {
+      // Sem a tabela (migration 017 ainda não rodou) a grade segue com o catálogo fixo.
+      console.warn('Produtos personalizados indisponíveis:', err.message)
     }
   }
 
@@ -60,8 +75,8 @@ export default function Acompanhamento() {
       if (onlyTracked && !c.currentFP && !c.perfil && Object.keys(c.produtos || {}).length === 0) return false
 
       if (tab === 'produtos' && filtroProduto !== 'todos') {
-        if (filtroProduto === 'abertos') return contarAbertos(c.produtos) > 0
-        if (filtroProduto === 'ativos')  return contarAtivos(c.produtos) > 0
+        if (filtroProduto === 'abertos') return contarAbertos(c.produtos, PRODUCTS) > 0
+        if (filtroProduto === 'ativos')  return contarAtivos(c.produtos, PRODUCTS) > 0
         // filtro por produto específico: quem ainda tem aquele item em aberto
         const abertos = new Set(['oferecer', 'em_contato', 'tem_interesse', 'ja_conversamos'])
         return abertos.has(c.produtos?.[filtroProduto]?.status)
@@ -75,7 +90,7 @@ export default function Acompanhamento() {
       }
       return fpStage(c.currentFP).key === fpFilter
     })
-  }, [clients, search, fpFilter, onlyTracked, tab, filtroProduto])
+  }, [clients, search, fpFilter, onlyTracked, tab, filtroProduto, PRODUCTS])
 
   // Contadores do topo — leem a base inteira, não o filtro atual.
   const stats = useMemo(() => {
@@ -86,9 +101,9 @@ export default function Acompanhamento() {
       if (c.currentFP?.in_execution) emExecucao++
       if (!c.currentFP) semFP++
     }
-    const comAberto = clients.filter(c => contarAbertos(c.produtos) > 0).length
+    const comAberto = clients.filter(c => contarAbertos(c.produtos, PRODUCTS) > 0).length
     return { total: clients.length, vencendo, emExecucao, semFP, comAberto }
-  }, [clients])
+  }, [clients, PRODUCTS])
 
   function exportCSV() {
     const header = tab === 'fp'
@@ -111,7 +126,7 @@ export default function Acompanhamento() {
       }
       if (tab === 'produtos') {
         return [
-          c.name, c.client_code || '', contarAtivos(c.produtos), contarAbertos(c.produtos),
+          c.name, c.client_code || '', contarAtivos(c.produtos, PRODUCTS), contarAbertos(c.produtos, PRODUCTS),
           ...PRODUCTS.map(prod => {
             const l = c.produtos?.[prod.key]
             if (!l) return ''
@@ -133,7 +148,7 @@ export default function Acompanhamento() {
 
     const escape = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
     const csv = [header, ...lines].map(r => r.map(escape).join(',')).join('\n')
-    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' })
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `acompanhamento_${tab}_${new Date().toISOString().slice(0, 10)}.csv`
@@ -203,6 +218,11 @@ export default function Acompanhamento() {
             </optgroup>
           </select>
         )}
+        {tab === 'produtos' && (
+          <button onClick={() => setGerenciando(true)} className="btn-secondary text-xs gap-1.5 whitespace-nowrap">
+            <Settings2 size={14} /> Colunas de produto
+          </button>
+        )}
         {tab === 'fp' && (
           <select value={fpFilter} onChange={e => setFpFilter(e.target.value)}
             className="px-3 py-2.5 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-accent-500">
@@ -230,7 +250,7 @@ export default function Acompanhamento() {
         ) : (
           <RolagemDupla>
             {tab === 'fp' ? <FPTable rows={rows} onPick={setSelected} />
-              : tab === 'produtos' ? <ProductsTable rows={rows} onPick={setSelected} onFiltrarAbertos={() => setFiltroProduto('abertos')} />
+              : tab === 'produtos' ? <ProductsTable rows={rows} produtos={PRODUCTS} onPick={setSelected} onFiltrarAbertos={() => setFiltroProduto('abertos')} />
               : <RelacaoTable rows={rows} onPick={setSelected} />}
           </RolagemDupla>
         )}
@@ -247,8 +267,17 @@ export default function Acompanhamento() {
         <ClientDrawer
           client={clients.find(c => c.id === selected.id) || selected}
           tab={tab}
+          produtos={PRODUCTS}
           onClose={() => setSelected(null)}
           onSaved={load}
+        />
+      )}
+
+      {gerenciando && (
+        <GerenciarProdutos
+          personalizados={personalizados}
+          onClose={() => setGerenciando(false)}
+          onChanged={loadProdutos}
         />
       )}
     </div>
@@ -319,7 +348,7 @@ function FPTable({ rows, onPick }) {
   )
 }
 
-function ProductsTable({ rows, onPick, onFiltrarAbertos }) {
+function ProductsTable({ rows, produtos: PRODUCTS, onPick, onFiltrarAbertos }) {
   return (
     <table className="w-full text-sm">
       <thead>
@@ -332,8 +361,8 @@ function ProductsTable({ rows, onPick, onFiltrarAbertos }) {
       </thead>
       <tbody className="divide-y divide-gray-50">
         {rows.map(c => {
-          const ativos = contarAtivos(c.produtos)
-          const abertos = contarAbertos(c.produtos)
+          const ativos = contarAtivos(c.produtos, PRODUCTS)
+          const abertos = contarAbertos(c.produtos, PRODUCTS)
           return (
             <tr key={c.id} onClick={() => onPick(c)} className="group hover:bg-gray-50/70 cursor-pointer">
               <td className="px-4 py-3 sticky left-0 bg-white group-hover:bg-gray-50/70 shadow-[1px_0_0_0_rgb(243_244_246)]">
