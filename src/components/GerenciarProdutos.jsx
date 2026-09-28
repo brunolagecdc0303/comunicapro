@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { X, Plus, Trash2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
-import { createProdutoPersonalizado, deleteProdutoPersonalizado } from '../lib/api'
+import { createProdutoPersonalizado, deleteProdutoPersonalizado } from '../lib/produtos'
 import { PRODUCTS, chaveDoProduto } from '../lib/tracking'
 
 /**
