@@ -36,7 +36,39 @@ export const PRODUCTS = [
   { key: 'opin',                label: 'OPIN',                         short: 'OPIN' },
   { key: 'fee_fixo',            label: 'Fee fixo (% a.a.)',            short: 'Fee fixo',
     detalhe: 'Qual taxa?' },
+  { key: 'zentis',              label: 'ZENTIS',                       short: 'ZENTIS' },
 ]
+
+/**
+ * Produto criado pelo time na tela (tabela produtos_personalizados) no mesmo
+ * formato do catálogo fixo, para a grade e o painel não distinguirem os dois.
+ */
+export function produtoPersonalizado(linha) {
+  return {
+    key: linha.chave,
+    label: linha.nome,
+    short: linha.abreviacao || linha.nome,
+    detalhe: linha.pergunta_detalhe || undefined,
+    personalizado: true,
+    id: linha.id,
+  }
+}
+
+/** Catálogo fixo + produtos do time, nesta ordem. */
+export function catalogoCompleto(personalizados = []) {
+  return [...PRODUCTS, ...personalizados.map(produtoPersonalizado)]
+}
+
+/**
+ * Chave gravada em client_product_status.produto para um nome digitado.
+ * O prefixo evita colidir com uma chave do catálogo fixo que venha a existir.
+ */
+export function chaveDoProduto(nome) {
+  const base = String(nome || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return base ? `p_${base}` : ''
+}
 
 /**
  * Os estágios da planilha, na ordem em que a conversa anda. `tom` define a cor
@@ -89,14 +121,14 @@ export function rotuloDe(lista, key) {
 }
 
 /** Produtos efetivamente ativos (fechou ou já possui). */
-export function contarAtivos(statusPorProduto) {
-  return PRODUCTS.filter(p => statusProduto(statusPorProduto?.[p.key]?.status).conta).length
+export function contarAtivos(statusPorProduto, produtos = PRODUCTS) {
+  return produtos.filter(p => statusProduto(statusPorProduto?.[p.key]?.status).conta).length
 }
 
 /** Produtos que ainda valem uma abordagem — é a fila de trabalho do assessor. */
-export function contarAbertos(statusPorProduto) {
+export function contarAbertos(statusPorProduto, produtos = PRODUCTS) {
   const abertos = new Set(['oferecer', 'em_contato', 'tem_interesse', 'ja_conversamos'])
-  return PRODUCTS.filter(p => abertos.has(statusPorProduto?.[p.key]?.status)).length
+  return produtos.filter(p => abertos.has(statusPorProduto?.[p.key]?.status)).length
 }
 
 /**
