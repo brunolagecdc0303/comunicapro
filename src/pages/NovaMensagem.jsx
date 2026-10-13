@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import {
   Send, Sparkles, Upload, FileText, AlertCircle, AlertTriangle, Users, Building2,
   Search, Save, FolderOpen, Plus, Check, ChevronLeft, Eye, Trash2, User,
-  CalendarClock, BookmarkPlus, History,
+  CalendarClock, BookmarkPlus, History, MessageCircle,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuth } from '../hooks/useAuth'
@@ -17,6 +17,7 @@ import { montarDestinatarios, avisosDoDestinatario, temErroBloqueante } from '..
 import { formatarTelefone } from '../lib/format'
 import GrupoModal from '../components/GrupoModal'
 import PdfsModal from '../components/PdfsModal'
+import EnvioManual from '../components/EnvioManual'
 
 const ETAPAS = [
   { n: 1, titulo: 'Destinatários' },
@@ -55,6 +56,7 @@ export default function NovaMensagem() {
   const [mostrarRascunhos, setMostrarRascunhos] = useState(false)
   const [mostrarPdfs, setMostrarPdfs] = useState(false)
   const [preview, setPreview] = useState(null)
+  const [envioManual, setEnvioManual] = useState(false)
   const pdfInputRef = useRef()
 
   const delay = team?.settings?.delay_between_messages ?? 5
@@ -295,6 +297,62 @@ export default function NovaMensagem() {
       setEnviando(false)
     }
   }
+
+  // ==========================================
+  // Envio pelo WhatsApp do próprio assessor
+  // ==========================================
+  function abrirEnvioManual() {
+    const prontos = itens.filter(i => i.status === 'gerada' && i.message.trim())
+    if (prontos.length === 0) return toast.error('Nenhuma mensagem para enviar')
+    if (comErro.length > 0) {
+      return toast.error(`${comErro.length} destinatário(s) com pendência. Resolva ou remova antes de enviar.`)
+    }
+    // Quem foi pulado da última vez volta para a fila ao reabrir.
+    setItens(prev => prev.map(i => i.envio === 'pulado' ? { ...i, envio: undefined } : i))
+    setEnvioManual(true)
+  }
+
+  function marcarEnvioManual(destinatarioId, envio) {
+    setItens(prev => prev.map(i => i.destinatarioId === destinatarioId ? { ...i, envio } : i))
+  }
+
+  async function fecharEnvioManual() {
+    setEnvioManual(false)
+    const enviados = itens.filter(i => i.envio === 'enviado').length
+    if (enviados === 0) return
+
+    // Quem já recebeu sai da revisão; os pulados ficam para outra rodada.
+    const restantes = itens.filter(i => i.envio !== 'enviado')
+    setItens(restantes)
+    setSelecionados(new Set(restantes.map(i => i.destinatarioId)))
+
+    if (restantes.length === 0) {
+      if (rascunhoId) await markDraftSent(rascunhoId).catch(() => {})
+      setPrompt(''); setRascunhoId(null); setRascunhoNome(''); setAgendarPara('')
+      setDrafts(await getDrafts(team.id).catch(() => drafts))
+      setEtapa(1)
+    }
+    setUltimoContato(await getUltimoContato(team.id).catch(() => ultimoContato))
+    toast.success(`${enviados} mensagem(ns) registrada(s) no histórico`)
+  }
+
+  const itensEnvioManual = itens
+    .filter(i => i.status === 'gerada' && i.message.trim())
+    .map(i => {
+      const d = destinatarios.find(x => x.id === i.destinatarioId)
+      if (!d) return null
+      return {
+        id: i.destinatarioId,
+        nome: d.nome,
+        titular: d.titular,
+        telefone: d.telefone,
+        texto: aplicarNome(i.message, d.titular),
+        pdfs: d.pdfs,
+        enviado: i.envio === 'enviado',
+        pulado: i.envio === 'pulado',
+      }
+    })
+    .filter(Boolean)
 
   // ==========================================
   // Templates de instrução
@@ -698,8 +756,8 @@ export default function NovaMensagem() {
               </p>
               <p className="text-xs text-gray-400">
                 {agendarPara
-                  ? `Agendado para ${new Date(agendarPara).toLocaleString('pt-BR')}`
-                  : `Entram na fila e saem com ${delay}s entre cada uma — pode fechar a aba`}
+                  ? `Agendado para ${new Date(agendarPara).toLocaleString('pt-BR')} pela fila automática`
+                  : 'Pelo seu WhatsApp: você confere e envia uma a uma, sem risco de bloqueio'}
                 {comErro.length > 0 && <span className="text-red-600"> · {comErro.length} com pendência</span>}
               </p>
             </div>
@@ -719,11 +777,18 @@ export default function NovaMensagem() {
                 <ChevronLeft size={16} /> Voltar
               </button>
               <button onClick={enviar} disabled={enviando || prontosCount === 0 || comErro.length > 0}
-                className="btn-primary gap-1.5">
+                className={`${agendarPara ? 'btn-primary' : 'btn-secondary'} gap-1.5`}
+                title="Envio automático pela Wasender (fila)">
                 {enviando
-                  ? <><div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full" /> Enfileirando...</>
-                  : agendarPara ? <><CalendarClock size={16} /> Agendar</> : <><Send size={16} /> Enviar</>}
+                  ? <><div className={`animate-spin w-4 h-4 border-2 ${agendarPara ? 'border-white' : 'border-navy-500'} border-t-transparent rounded-full`} /> Enfileirando...</>
+                  : agendarPara ? <><CalendarClock size={16} /> Agendar</> : <><Send size={16} /> Fila automática</>}
               </button>
+              {!agendarPara && (
+                <button onClick={abrirEnvioManual} disabled={prontosCount === 0 || comErro.length > 0}
+                  className="btn-primary gap-1.5">
+                  <MessageCircle size={16} /> Enviar pelo meu WhatsApp
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -732,6 +797,15 @@ export default function NovaMensagem() {
       {mostrarPdfs && (
         <PdfsModal pdfs={pdfs} contacts={contacts} onClose={() => setMostrarPdfs(false)}
           onChanged={async () => setPdfs(await getPDFs(team.id))} />
+      )}
+
+      {envioManual && (
+        <EnvioManual
+          teamId={team.id}
+          itens={itensEnvioManual}
+          onMarcado={marcarEnvioManual}
+          onClose={fecharEnvioManual}
+        />
       )}
 
       {grupoModal && (

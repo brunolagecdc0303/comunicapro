@@ -926,3 +926,46 @@ export async function criarAssessor(email, senha, nomeDoTime) {
   if (data?.error) throw new Error(data.error)
   return data
 }
+
+// ============================================
+// ENVIO PELO WHATSAPP DO PRÓPRIO ASSESSOR (link)
+// ============================================
+/**
+ * Link que abre a conversa com o texto já digitado. Quem aperta "enviar" é o
+ * assessor, no WhatsApp dele — para a Meta é uma mensagem comum, sem risco de
+ * bloqueio por automação.
+ *
+ * modo: 'web' (WhatsApp Web), 'app' (WhatsApp instalado no computador) ou
+ * 'celular' (wa.me, que no celular abre direto o app).
+ */
+export function linkWhatsApp(phone, texto, modo = 'web') {
+  const numero = String(phone ?? '').replace(/\D/g, '')
+  const msg = encodeURIComponent(texto ?? '')
+  if (modo === 'app') return `whatsapp://send?phone=${numero}&text=${msg}`
+  if (modo === 'celular') return `https://wa.me/${numero}?text=${msg}`
+  return `https://web.whatsapp.com/send?phone=${numero}&text=${msg}`
+}
+
+/** Baixa o PDF do bucket privado como File, pronto para download ou compartilhamento. */
+export async function baixarPDFComoArquivo(pdf) {
+  const { data, error } = await supabase.storage.from('pdfs').download(pdf.storage_path)
+  if (error) throw error
+  return new File([data], pdf.name || 'relatorio.pdf', { type: 'application/pdf' })
+}
+
+/**
+ * Registra no histórico uma mensagem enviada à mão. Entra no message_log como
+ * qualquer envio, então conta no Dashboard e no aviso de "última mensagem".
+ */
+export async function registrarEnvioManual(teamId, { phone, name, content, pdfs = [] }) {
+  const { error } = await supabase.from('message_log').insert({
+    team_id: teamId,
+    contact_phone: phone,
+    contact_name: name || null,
+    content,
+    status: 'sent',
+    direction: 'outbound',
+    metadata: { via: 'whatsapp_manual', pdfs: pdfs.map(p => p.name) },
+  })
+  if (error) throw error
+}
