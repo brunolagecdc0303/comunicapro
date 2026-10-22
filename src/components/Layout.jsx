@@ -10,10 +10,7 @@ const nav = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/contatos', icon: Users, label: 'Contatos' },
   { to: '/acompanhamento', icon: Table2, label: 'Acompanhamento' },
-  { to: '/templates', icon: FileText, label: 'Templates' },
-  { to: '/campanhas', icon: Send, label: 'Campanhas' },
-  { to: '/envios-programados', icon: CalendarClock, label: 'Envios Programados' },
-  { to: '/mensagens', icon: MessageSquare, label: 'Nova Mensagem' },
+  { to: '/mensagens', icon: MessageSquare, label: 'Mensagens' },
   { to: '/config', icon: Settings, label: 'Configurações' },
 ]
 

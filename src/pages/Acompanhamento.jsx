@@ -7,6 +7,8 @@ import { getProdutosPersonalizados } from '../lib/produtos'
 import ClientDrawer from '../components/ClientDrawer'
 import RolagemDupla from '../components/RolagemDupla'
 import GerenciarProdutos from '../components/GerenciarProdutos'
+import { JornadaView } from '../components/Jornada'
+import { getJornada } from '../lib/jornada'
 import {
   catalogoCompleto, STATUS_PRODUTO, TONS_STATUS, statusProduto, contarAtivos, contarAbertos,
   PROXIMIDADE, INDICACAO, rotuloDe, fpStage, STAGE_TONES, nextFPStatus, formatDate,
@@ -22,15 +24,16 @@ const FP_FILTERS = [
 ]
 
 /**
- * Visão consolidada dos clientes, em formato de planilha.
- * Duas abas: Financial Planning e Produtos contratados. Clicar em qualquer
- * linha abre o painel de edição daquele cliente.
+ * Acompanhamento dos clientes.
+ * A aba principal é a Jornada (Hoje + quadro por etapa do método). As planilhas
+ * de FP, Produtos e Relacionamento continuam nas outras abas.
  */
 export default function Acompanhamento() {
   const { team } = useAuth()
   const [clients, setClients] = useState([])
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState('fp')
+  const [tab, setTab] = useState('jornada')
+  const [jornada, setJornada] = useState(null)
   const [search, setSearch] = useState('')
   const [fpFilter, setFpFilter] = useState('todos')
   const [onlyTracked, setOnlyTracked] = useState(false)
@@ -45,8 +48,9 @@ export default function Acompanhamento() {
   async function load() {
     setLoading(true)
     try {
-      const [lista] = await Promise.all([getClientTracking(team.id), loadProdutos()])
+      const [lista, dadosJornada] = await Promise.all([getClientTracking(team.id), getJornada(team.id), loadProdutos()])
       setClients(lista)
+      setJornada(dadosJornada)
     } catch (err) {
       toast.error('Erro ao carregar acompanhamento: ' + (err.message || ''))
     } finally {
@@ -162,14 +166,17 @@ export default function Acompanhamento() {
         <div>
           <h2 className="text-2xl font-display font-bold text-navy-500">Acompanhamento</h2>
           <p className="text-sm text-gray-400 mt-0.5">
-            Financial Planning, esteira de produtos e relacionamento — um cliente por linha.
+            Em que etapa cada cliente está e o que pede ação hoje.
           </p>
         </div>
-        <button onClick={exportCSV} disabled={rows.length === 0} className="btn-secondary text-xs gap-1.5">
-          <Download size={14} /> Exportar CSV
-        </button>
+        {tab !== 'jornada' && (
+          <button onClick={exportCSV} disabled={rows.length === 0} className="btn-secondary text-xs gap-1.5">
+            <Download size={14} /> Exportar CSV
+          </button>
+        )}
       </div>
 
+      {tab !== 'jornada' && (
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
         <Stat label="Clientes" value={stats.total} />
         <Stat label="FP vencendo em 30d" value={stats.vencendo} tone="text-red-600"
@@ -181,9 +188,10 @@ export default function Acompanhamento() {
         <Stat label="Com produto em aberto" value={stats.comAberto} tone="text-accent-600"
           onClick={() => { setTab('produtos'); setFiltroProduto('abertos') }} />
       </div>
+      )}
 
       <div className="flex gap-1 border-b border-gray-200 mb-4">
-        {[['fp', 'Financial Planning'], ['produtos', 'Produtos'], ['relacao', 'Relacionamento']].map(([key, label]) => (
+        {[['jornada', 'Jornada'], ['produtos', 'Produtos'], ['relacao', 'Relacionamento'], ['fp', 'FP (planilha)']].map(([key, label]) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -198,6 +206,16 @@ export default function Acompanhamento() {
         ))}
       </div>
 
+      {tab === 'jornada' ? (
+        !jornada ? (
+          <div className="p-12 text-center">
+            <div className="animate-spin w-6 h-6 border-2 border-navy-500 border-t-transparent rounded-full mx-auto" />
+          </div>
+        ) : (
+          <JornadaView dados={jornada} recarregar={load}
+            onAbrirCompleto={(c) => setSelected(clients.find(x => x.id === c.id) || c)} />
+        )
+      ) : (<>
       <div className="flex flex-col lg:flex-row gap-3 mb-4">
         <div className="relative flex-1">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -262,6 +280,7 @@ export default function Acompanhamento() {
           )}
         </div>
       </div>
+      </>)}
 
       {selected && (
         <ClientDrawer
