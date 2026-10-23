@@ -8,10 +8,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Contatos from './pages/Contatos'
 import Acompanhamento from './pages/Acompanhamento'
-import Templates from './pages/Templates'
-import Campanhas from './pages/Campanhas'
-import EnviosProgramados from './pages/EnviosProgramados'
-import NovaMensagem from './pages/NovaMensagem'
+import Mensagens from './pages/Mensagens'
 import Config from './pages/Config'
 import Assessores from './pages/Assessores'
 import './styles/index.css'
@@ -37,10 +34,11 @@ function AppRoutes() {
         <Route index element={<Dashboard />} />
         <Route path="contatos" element={<Contatos />} />
         <Route path="acompanhamento" element={<Acompanhamento />} />
-        <Route path="templates" element={<Templates />} />
-        <Route path="campanhas" element={<Campanhas />} />
-        <Route path="envios-programados" element={<EnviosProgramados />} />
-        <Route path="mensagens" element={<NovaMensagem />} />
+        <Route path="mensagens" element={<Mensagens />} />
+        {/* Endereços antigos continuam funcionando e caem na aba certa */}
+        <Route path="templates" element={<Navigate to="/mensagens?aba=templates" replace />} />
+        <Route path="campanhas" element={<Navigate to="/mensagens?aba=campanhas" replace />} />
+        <Route path="envios-programados" element={<Navigate to="/mensagens?aba=programados" replace />} />
         <Route path="config" element={<Config />} />
         <Route path="admin" element={<Assessores />} />
       </Route>
